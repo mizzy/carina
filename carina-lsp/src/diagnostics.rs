@@ -73,12 +73,48 @@ impl DiagnosticEngine {
                     }
                 }
 
-                // Check for ResourceRef or resource binding used where String is expected
+                // Semantic validation using schema
                 let schema = self.get_schema_for_type(&resource.id.resource_type);
                 if let Some(schema) = schema {
                     for (attr_name, attr_value) in &resource.attributes {
                         if attr_name.starts_with('_') {
                             continue; // Skip internal attributes
+                        }
+
+                        // Check for unknown attributes
+                        if !schema.attributes.contains_key(attr_name) {
+                            if let Some((line, col)) = self.find_attribute_position(doc, attr_name)
+                            {
+                                // Check if there's a similar attribute (e.g., vpc -> vpc_id)
+                                let suggestion =
+                                    if schema.attributes.contains_key(&format!("{}_id", attr_name))
+                                    {
+                                        format!(". Did you mean '{}_id'?", attr_name)
+                                    } else {
+                                        String::new()
+                                    };
+
+                                diagnostics.push(Diagnostic {
+                                    range: Range {
+                                        start: Position {
+                                            line,
+                                            character: col,
+                                        },
+                                        end: Position {
+                                            line,
+                                            character: col + attr_name.len() as u32,
+                                        },
+                                    },
+                                    severity: Some(DiagnosticSeverity::WARNING),
+                                    source: Some("carina".to_string()),
+                                    message: format!(
+                                        "Unknown attribute '{}' for resource type '{}'{}",
+                                        attr_name, resource.id.resource_type, suggestion
+                                    ),
+                                    ..Default::default()
+                                });
+                            }
+                            continue;
                         }
 
                         // Check if attr expects a String type
@@ -187,6 +223,26 @@ impl DiagnosticEngine {
             if let Some(col) = line.find(&dsl_type) {
                 return Some((line_idx as u32, col as u32));
             }
+        }
+        None
+    }
+
+    fn find_attribute_position(&self, doc: &Document, attr_name: &str) -> Option<(u32, u32)> {
+        let text = doc.text();
+
+        for (line_idx, line) in text.lines().enumerate() {
+            let trimmed = line.trim_start();
+            // Must start with attr_name followed by whitespace or '='
+            if !trimmed.starts_with(attr_name) {
+                continue;
+            }
+            let after_attr = &trimmed[attr_name.len()..];
+            if !after_attr.starts_with(' ') && !after_attr.starts_with('=') {
+                continue;
+            }
+            // Calculate column position (account for leading whitespace)
+            let leading_ws = line.len() - trimmed.len();
+            return Some((line_idx as u32, leading_ws as u32));
         }
         None
     }
