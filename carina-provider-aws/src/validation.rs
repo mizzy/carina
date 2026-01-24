@@ -159,17 +159,25 @@ pub fn validate_s3_bucket(attributes: &HashMap<String, Value>) -> ValidationResu
 }
 
 /// Format serde deserialization error for user display
+/// Converts CamelCase values back to lowercase for consistency with DSL
 fn format_serde_error(e: &serde_json::Error) -> String {
     let msg = e.to_string();
     // Make error messages more user-friendly
-    if msg.contains("unknown variant") {
-        // Extract the invalid value and expected values from the error
+    let msg = if msg.contains("unknown variant") {
         msg.replace("unknown variant", "invalid value")
     } else if msg.contains("missing field") {
         msg.replace("missing field", "missing required field")
     } else {
         msg
-    }
+    };
+
+    // Convert CamelCase words (backtick-quoted) to lowercase for user clarity
+    // e.g., `Enabled` -> `enabled`, `Disabled` -> `disabled`
+    let re = regex::Regex::new(r"`([A-Z][a-z]+)`").unwrap();
+    re.replace_all(&msg, |caps: &regex::Captures| {
+        format!("`{}`", caps[1].to_lowercase())
+    })
+    .to_string()
 }
 
 /// Validate a resource based on its type
