@@ -4,6 +4,7 @@
 //! enabling type validation at parse time.
 
 use std::collections::HashMap;
+use std::fmt;
 
 use crate::resource::Value;
 
@@ -92,6 +93,12 @@ impl AttributeType {
             AttributeType::List(inner) => format!("List<{}>", inner.type_name()),
             AttributeType::Map(inner) => format!("Map<{}>", inner.type_name()),
         }
+    }
+}
+
+impl fmt::Display for AttributeType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.type_name())
     }
 }
 

@@ -212,7 +212,46 @@ An AWS VPC Security Group.
 | `to_port` | Int | End of port range (0-65535) |
 | `cidr` | String | CIDR block to allow (e.g., "0.0.0.0/0") |
 
-#### Example
+#### Example (Terraform-style blocks)
+
+```crn
+let web_sg = aws.security_group {
+    name        = "web-sg"
+    region      = aws.Region.ap_northeast_1
+    vpc         = main_vpc.name
+    description = "Web server security group"
+
+    ingress {
+        protocol  = "tcp"
+        from_port = 80
+        to_port   = 80
+        cidr      = "0.0.0.0/0"
+    }
+
+    ingress {
+        protocol  = "tcp"
+        from_port = 443
+        to_port   = 443
+        cidr      = "0.0.0.0/0"
+    }
+
+    ingress {
+        protocol  = "tcp"
+        from_port = 22
+        to_port   = 22
+        cidr      = "10.0.0.0/8"
+    }
+
+    egress {
+        protocol  = "-1"
+        from_port = 0
+        to_port   = 0
+        cidr      = "0.0.0.0/0"
+    }
+}
+```
+
+#### Example (List syntax)
 
 ```crn
 let web_sg = aws.security_group {
@@ -222,8 +261,7 @@ let web_sg = aws.security_group {
     description = "Web server security group"
     ingress = [
         { protocol = "tcp", from_port = 80,  to_port = 80,  cidr = "0.0.0.0/0" },
-        { protocol = "tcp", from_port = 443, to_port = 443, cidr = "0.0.0.0/0" },
-        { protocol = "tcp", from_port = 22,  to_port = 22,  cidr = "10.0.0.0/8" }
+        { protocol = "tcp", from_port = 443, to_port = 443, cidr = "0.0.0.0/0" }
     ]
     egress = [
         { protocol = "-1", from_port = 0, to_port = 0, cidr = "0.0.0.0/0" }
@@ -319,13 +357,27 @@ let web_sg = aws.security_group {
     region      = aws.Region.ap_northeast_1
     vpc         = main_vpc.name
     description = "Web server security group"
-    ingress = [
-        { protocol = "tcp", from_port = 80,  to_port = 80,  cidr = "0.0.0.0/0" },
-        { protocol = "tcp", from_port = 443, to_port = 443, cidr = "0.0.0.0/0" }
-    ]
-    egress = [
-        { protocol = "-1", from_port = 0, to_port = 0, cidr = "0.0.0.0/0" }
-    ]
+
+    ingress {
+        protocol  = "tcp"
+        from_port = 80
+        to_port   = 80
+        cidr      = "0.0.0.0/0"
+    }
+
+    ingress {
+        protocol  = "tcp"
+        from_port = 443
+        to_port   = 443
+        cidr      = "0.0.0.0/0"
+    }
+
+    egress {
+        protocol  = "-1"
+        from_port = 0
+        to_port   = 0
+        cidr      = "0.0.0.0/0"
+    }
 }
 
 let db_sg = aws.security_group {
@@ -333,12 +385,20 @@ let db_sg = aws.security_group {
     region      = aws.Region.ap_northeast_1
     vpc         = main_vpc.name
     description = "Database security group"
-    ingress = [
-        { protocol = "tcp", from_port = 3306, to_port = 3306, cidr = "10.0.0.0/16" }
-    ]
-    egress = [
-        { protocol = "-1", from_port = 0, to_port = 0, cidr = "0.0.0.0/0" }
-    ]
+
+    ingress {
+        protocol  = "tcp"
+        from_port = 3306
+        to_port   = 3306
+        cidr      = "10.0.0.0/16"
+    }
+
+    egress {
+        protocol  = "-1"
+        from_port = 0
+        to_port   = 0
+        cidr      = "0.0.0.0/0"
+    }
 }
 
 // S3 Bucket

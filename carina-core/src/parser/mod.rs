@@ -222,15 +222,7 @@ fn parse_anonymous_resource(
     let provider = parts[0];
     let resource_type = parts[1..].join("_");
 
-    let mut attributes = HashMap::new();
-    for attr_pair in inner {
-        if attr_pair.as_rule() == Rule::attribute {
-            let mut attr_inner = attr_pair.into_inner();
-            let key = attr_inner.next().unwrap().as_str().to_string();
-            let value = parse_expression(attr_inner.next().unwrap(), ctx)?;
-            attributes.insert(key, value);
-        }
-    }
+    let attributes = parse_block_contents(inner, ctx)?;
 
     // Get resource name from name attribute
     let resource_name = match attributes.get("name") {
@@ -244,6 +236,7 @@ fn parse_anonymous_resource(
     };
 
     // Add provider information to attributes
+    let mut attributes = attributes;
     attributes.insert("_provider".to_string(), Value::String(provider.to_string()));
     attributes.insert("_type".to_string(), Value::String(namespaced_type.clone()));
 
@@ -251,6 +244,68 @@ fn parse_anonymous_resource(
         id: ResourceId::new(resource_type, resource_name),
         attributes,
     })
+}
+
+/// Parse block contents (attributes and nested blocks)
+/// Nested blocks with the same name are collected into a list
+fn parse_block_contents(
+    pairs: pest::iterators::Pairs<Rule>,
+    ctx: &ParseContext,
+) -> Result<HashMap<String, Value>, ParseError> {
+    let mut attributes: HashMap<String, Value> = HashMap::new();
+    let mut nested_blocks: HashMap<String, Vec<Value>> = HashMap::new();
+
+    for content_pair in pairs {
+        match content_pair.as_rule() {
+            Rule::block_content => {
+                let inner = content_pair.into_inner().next().unwrap();
+                match inner.as_rule() {
+                    Rule::attribute => {
+                        let mut attr_inner = inner.into_inner();
+                        let key = attr_inner.next().unwrap().as_str().to_string();
+                        let value = parse_expression(attr_inner.next().unwrap(), ctx)?;
+                        attributes.insert(key, value);
+                    }
+                    Rule::nested_block => {
+                        let mut block_inner = inner.into_inner();
+                        let block_name = block_inner.next().unwrap().as_str().to_string();
+
+                        // Parse nested block attributes into a map
+                        let mut block_attrs = HashMap::new();
+                        for attr_pair in block_inner {
+                            if attr_pair.as_rule() == Rule::attribute {
+                                let mut attr_inner = attr_pair.into_inner();
+                                let key = attr_inner.next().unwrap().as_str().to_string();
+                                let value = parse_expression(attr_inner.next().unwrap(), ctx)?;
+                                block_attrs.insert(key, value);
+                            }
+                        }
+
+                        // Add to the list of blocks with this name
+                        nested_blocks
+                            .entry(block_name)
+                            .or_default()
+                            .push(Value::Map(block_attrs));
+                    }
+                    _ => {}
+                }
+            }
+            Rule::attribute => {
+                let mut attr_inner = content_pair.into_inner();
+                let key = attr_inner.next().unwrap().as_str().to_string();
+                let value = parse_expression(attr_inner.next().unwrap(), ctx)?;
+                attributes.insert(key, value);
+            }
+            _ => {}
+        }
+    }
+
+    // Convert nested blocks to list attributes
+    for (name, blocks) in nested_blocks {
+        attributes.insert(name, Value::List(blocks));
+    }
+
+    Ok(attributes)
 }
 
 fn parse_resource_expr(
@@ -272,15 +327,7 @@ fn parse_resource_expr(
     let provider = parts[0];
     let resource_type = parts[1..].join("_");
 
-    let mut attributes = HashMap::new();
-    for attr_pair in inner {
-        if attr_pair.as_rule() == Rule::attribute {
-            let mut attr_inner = attr_pair.into_inner();
-            let key = attr_inner.next().unwrap().as_str().to_string();
-            let value = parse_expression(attr_inner.next().unwrap(), ctx)?;
-            attributes.insert(key, value);
-        }
-    }
+    let mut attributes = parse_block_contents(inner, ctx)?;
 
     // Get resource name from name attribute (same as anonymous resources)
     let resource_name = match attributes.get("name") {
@@ -361,6 +408,25 @@ fn parse_primary_value(
                 line: 0,
                 message: "Resource expressions can only be used in let bindings".to_string(),
             })
+        }
+        Rule::list => {
+            let items: Result<Vec<Value>, ParseError> = inner
+                .into_inner()
+                .map(|item| parse_expression(item, ctx))
+                .collect();
+            Ok(Value::List(items?))
+        }
+        Rule::map => {
+            let mut map = HashMap::new();
+            for entry in inner.into_inner() {
+                if entry.as_rule() == Rule::map_entry {
+                    let mut entry_inner = entry.into_inner();
+                    let key = entry_inner.next().unwrap().as_str().to_string();
+                    let value = parse_expression(entry_inner.next().unwrap(), ctx)?;
+                    map.insert(key, value);
+                }
+            }
+            Ok(Value::Map(map))
         }
         Rule::namespaced_id => {
             // Namespaced identifier (e.g., aws.Region.ap_northeast_1)
@@ -832,5 +898,110 @@ mod tests {
             result.resources[0].attributes.get("region"),
             Some(&Value::String("aws.Region.ap_northeast_1".to_string()))
         );
+    }
+
+    #[test]
+    fn parse_nested_blocks_terraform_style() {
+        let input = r#"
+            let web_sg = aws.security_group {
+                name        = "web-sg"
+                region      = aws.Region.ap_northeast_1
+                vpc         = "my-vpc"
+                description = "Web server security group"
+
+                ingress {
+                    protocol  = "tcp"
+                    from_port = 80
+                    to_port   = 80
+                    cidr      = "0.0.0.0/0"
+                }
+
+                ingress {
+                    protocol  = "tcp"
+                    from_port = 443
+                    to_port   = 443
+                    cidr      = "0.0.0.0/0"
+                }
+
+                egress {
+                    protocol  = "-1"
+                    from_port = 0
+                    to_port   = 0
+                    cidr      = "0.0.0.0/0"
+                }
+            }
+        "#;
+
+        let result = parse(input).unwrap();
+        assert_eq!(result.resources.len(), 1);
+
+        let sg = &result.resources[0];
+        assert_eq!(sg.id.resource_type, "security_group");
+
+        // Check ingress is a list with 2 items
+        let ingress = sg.attributes.get("ingress").unwrap();
+        if let Value::List(items) = ingress {
+            assert_eq!(items.len(), 2);
+
+            // Check first ingress rule
+            if let Value::Map(rule) = &items[0] {
+                assert_eq!(
+                    rule.get("protocol"),
+                    Some(&Value::String("tcp".to_string()))
+                );
+                assert_eq!(rule.get("from_port"), Some(&Value::Int(80)));
+            } else {
+                panic!("Expected map for ingress rule");
+            }
+        } else {
+            panic!("Expected list for ingress");
+        }
+
+        // Check egress is a list with 1 item
+        let egress = sg.attributes.get("egress").unwrap();
+        if let Value::List(items) = egress {
+            assert_eq!(items.len(), 1);
+        } else {
+            panic!("Expected list for egress");
+        }
+    }
+
+    #[test]
+    fn parse_list_syntax() {
+        let input = r#"
+            let rt = aws.route_table {
+                name   = "public-rt"
+                region = aws.Region.ap_northeast_1
+                vpc    = "my-vpc"
+                routes = [
+                    { destination = "0.0.0.0/0", gateway = "my-igw" },
+                    { destination = "10.0.0.0/8", gateway = "local" }
+                ]
+            }
+        "#;
+
+        let result = parse(input).unwrap();
+        assert_eq!(result.resources.len(), 1);
+
+        let rt = &result.resources[0];
+        let routes = rt.attributes.get("routes").unwrap();
+        if let Value::List(items) = routes {
+            assert_eq!(items.len(), 2);
+
+            if let Value::Map(route) = &items[0] {
+                assert_eq!(
+                    route.get("destination"),
+                    Some(&Value::String("0.0.0.0/0".to_string()))
+                );
+                assert_eq!(
+                    route.get("gateway"),
+                    Some(&Value::String("my-igw".to_string()))
+                );
+            } else {
+                panic!("Expected map for route");
+            }
+        } else {
+            panic!("Expected list for routes");
+        }
     }
 }

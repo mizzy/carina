@@ -73,7 +73,7 @@ impl HoverProvider {
             } else {
                 "Optional"
             };
-            let type_name = format!("{:?}", attr.attr_type);
+            let type_name = format!("{}", attr.attr_type);
 
             let content = format!(
                 "## {}\n\n{}\n\n- **Type**: {}\n- **Required**: {}",
