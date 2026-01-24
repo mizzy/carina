@@ -8,7 +8,7 @@ provider aws {
 aws.s3.bucket {
     bucket_name = "carina-test-logs-mizzy-2026"
     versioning_configuration = {
-        status = disabled
+        status = suspended 
     }
 }
 

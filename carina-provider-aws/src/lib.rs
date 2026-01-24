@@ -128,10 +128,12 @@ impl AwsProvider {
 
     /// Convert resource attributes to JSON for Cloud Control API
     /// Converts snake_case keys to CamelCase for CloudFormation compatibility
+    /// Filters out internal properties (_type, _provider)
     fn attributes_to_json(attributes: &HashMap<String, Value>) -> String {
         let camel_case_attrs = attributes_to_camel_case(attributes);
         let obj: serde_json::Map<String, serde_json::Value> = camel_case_attrs
             .iter()
+            .filter(|(k, _)| k.as_str() != "Type" && k.as_str() != "Provider")
             .map(|(k, v)| (k.clone(), Self::value_to_json(v)))
             .collect();
         serde_json::to_string(&serde_json::Value::Object(obj)).unwrap_or_default()
@@ -139,11 +141,13 @@ impl AwsProvider {
 
     /// Parse JSON properties from Cloud Control API response
     /// Converts CamelCase keys to snake_case for Carina DSL compatibility
+    /// Filters out read-only properties
     fn parse_properties(properties: &str) -> HashMap<String, Value> {
         match serde_json::from_str::<serde_json::Value>(properties) {
             Ok(serde_json::Value::Object(obj)) => {
                 let camel_case_attrs: HashMap<String, Value> = obj
                     .iter()
+                    .filter(|(k, _)| !Self::READ_ONLY_PROPERTIES.contains(&k.as_str()))
                     .filter_map(|(k, v)| Self::json_to_value(v).map(|val| (k.clone(), val)))
                     .collect();
                 attributes_to_snake_case(&camel_case_attrs)
@@ -219,6 +223,16 @@ impl AwsProvider {
         }
     }
 
+    /// Read-only properties that should be excluded from patches
+    /// These are returned by AWS but cannot be updated
+    const READ_ONLY_PROPERTIES: &'static [&'static str] = &[
+        "Arn",
+        "DomainName",
+        "DualStackDomainName",
+        "RegionalDomainName",
+        "WebsiteURL",
+    ];
+
     /// Generate JSON Patch document for update operation
     /// Converts snake_case keys to CamelCase for CloudFormation compatibility
     fn generate_patch(from: &State, to: &Resource) -> Result<String, ProviderError> {
@@ -230,6 +244,15 @@ impl AwsProvider {
 
         // Find attributes that need to be added or modified
         for (key, new_value) in &to_camel {
+            // Skip read-only and internal properties
+            // Internal properties like _type become Type after CamelCase conversion
+            if Self::READ_ONLY_PROPERTIES.contains(&key.as_str())
+                || key == "Type"
+                || key == "Provider"
+            {
+                continue;
+            }
+
             let new_json = Self::value_to_json(new_value);
 
             if let Some(old_value) = from_camel.get(key) {
@@ -254,6 +277,14 @@ impl AwsProvider {
 
         // Find attributes that need to be removed
         for key in from_camel.keys() {
+            // Skip read-only and internal properties
+            if Self::READ_ONLY_PROPERTIES.contains(&key.as_str())
+                || key == "Type"
+                || key == "Provider"
+            {
+                continue;
+            }
+
             if !to_camel.contains_key(key) {
                 patches.push(serde_json::json!({
                     "op": "remove",
@@ -372,7 +403,7 @@ impl Provider for AwsProvider {
                 .send()
                 .await
                 .map_err(|e| {
-                    ProviderError::new(format!("Failed to update resource: {}", e))
+                    ProviderError::new(format!("Failed to update resource: {:?}", e))
                         .for_resource(id.clone())
                 })?;
 
