@@ -1,25 +1,25 @@
-# Carina example - Anonymous and named resources
+# Carina example - Using snake_case attributes
 
 provider aws {
     region = aws.Region.ap_northeast_1
 }
 
-# Anonymous resource (ID derived from name attribute)
+# Anonymous resource (ID derived from bucket_name attribute)
 aws.s3.bucket {
-    name = "carina-test-logs-mizzy-2026"
-    region = aws.Region.ap_northeast_1
-    versioning = true
-    expiration_days = 90
+    bucket_name = "carina-test-logs-mizzy-2026"
+    versioning_configuration = {
+        status = enabled
+    }
 }
 
 aws.s3.bucket {
-    name = "carina-test-data-mizzy-2026"
-    region = aws.Region.ap_northeast_1
-    versioning = true
+    bucket_name = "carina-test-data-mizzy-2026"
+    versioning_configuration = {
+        status = enabled
+    }
 }
 
 # Named resource (for referencing)
 let backup = aws.s3.bucket {
-    name = "carina-test-backup-mizzy-2026"
-    region = aws.Region.ap_northeast_1
+    bucket_name = "carina-test-backup-mizzy-2026"
 }

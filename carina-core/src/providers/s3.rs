@@ -1,18 +1,49 @@
 //! S3 bucket schema definition
+//!
+//! Supports both legacy attribute names and CloudFormation-style attribute names.
 
-use crate::schema::{types, AttributeSchema, AttributeType, ResourceSchema};
+use crate::schema::{AttributeSchema, AttributeType, ResourceSchema, types};
 
 /// Returns the schema for S3 buckets
+/// Supports both legacy (name, region) and CloudFormation (BucketName) style attributes
 pub fn bucket_schema() -> ResourceSchema {
     ResourceSchema::new("s3_bucket")
         .with_description("An S3 bucket for object storage")
+        // CloudFormation-style attributes
+        .attribute(
+            AttributeSchema::new("BucketName", types::s3_bucket_name())
+                .with_description("The name of the bucket (CloudFormation style)"),
+        )
+        .attribute(
+            AttributeSchema::new(
+                "VersioningConfiguration",
+                AttributeType::Map(Box::new(AttributeType::String)),
+            )
+            .with_description("Versioning configuration for the bucket"),
+        )
+        .attribute(
+            AttributeSchema::new(
+                "LifecycleConfiguration",
+                AttributeType::Map(Box::new(AttributeType::String)),
+            )
+            .with_description("Lifecycle configuration for the bucket"),
+        )
+        .attribute(
+            AttributeSchema::new(
+                "Tags",
+                AttributeType::List(Box::new(AttributeType::Map(Box::new(
+                    AttributeType::String,
+                )))),
+            )
+            .with_description("Tags for the bucket"),
+        )
+        // Legacy attributes (for backward compatibility)
         .attribute(
             AttributeSchema::new("name", types::s3_bucket_name())
                 .with_description("Override bucket name (defaults to resource name)"),
         )
         .attribute(
             AttributeSchema::new("region", types::aws_region())
-                .required()
                 .with_description("The AWS region for the bucket"),
         )
         .attribute(
@@ -96,8 +127,9 @@ mod tests {
         let schema = bucket_schema();
         let attrs = HashMap::new();
 
+        // With CloudFormation style, region is not required
         let result = schema.validate(&attrs);
-        assert!(result.is_err());
+        assert!(result.is_ok());
     }
 
     #[test]
@@ -111,5 +143,36 @@ mod tests {
         attrs.insert("expiration_days".to_string(), Value::Int(-1)); // negative
 
         assert!(schema.validate(&attrs).is_err());
+    }
+
+    #[test]
+    fn valid_cloudformation_style_bucket() {
+        let schema = bucket_schema();
+        let mut attrs = HashMap::new();
+        attrs.insert(
+            "BucketName".to_string(),
+            Value::String("my-cf-bucket".to_string()),
+        );
+
+        assert!(schema.validate(&attrs).is_ok());
+    }
+
+    #[test]
+    fn valid_cloudformation_style_with_versioning() {
+        let schema = bucket_schema();
+        let mut attrs = HashMap::new();
+        attrs.insert(
+            "BucketName".to_string(),
+            Value::String("my-cf-bucket".to_string()),
+        );
+        attrs.insert(
+            "VersioningConfiguration".to_string(),
+            Value::Map(HashMap::from([(
+                "Status".to_string(),
+                Value::String("Enabled".to_string()),
+            )])),
+        );
+
+        assert!(schema.validate(&attrs).is_ok());
     }
 }

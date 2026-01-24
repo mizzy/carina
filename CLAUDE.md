@@ -47,7 +47,7 @@ DSL (.crn) → Parser → Resources → Differ → Plan (Effects) → Interprete
 ### Crate Structure
 
 - **carina-core**: Core library with parser, types, and traits. No AWS dependencies.
-- **carina-provider-aws**: AWS implementation of Provider trait using `aws-sdk-s3`.
+- **carina-provider-aws**: AWS implementation of Provider trait using AWS Cloud Control API.
 - **carina-cli**: Binary that wires everything together.
 
 ### DSL Parser
@@ -62,6 +62,13 @@ The parser uses [pest](https://pest.rs/) grammar defined in `carina-core/src/par
 The DSL uses `aws.Region.ap_northeast_1` format, but AWS SDK uses `ap-northeast-1`. Conversion happens in:
 - `carina-provider-aws/src/lib.rs`: `convert_region_value()` for DSL→SDK
 - Provider read operations return DSL format for consistent state comparison
+
+## Development Setup
+
+```bash
+# Install git hooks (runs fmt, clippy, tests before commit)
+./scripts/setup-hooks.sh
+```
 
 ## Code Style
 

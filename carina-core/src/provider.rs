@@ -28,7 +28,9 @@ impl std::fmt::Display for ProviderError {
 
 impl std::error::Error for ProviderError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.cause.as_ref().map(|e| e.as_ref() as &dyn std::error::Error)
+        self.cause
+            .as_ref()
+            .map(|e| e.as_ref() as &dyn std::error::Error)
     }
 }
 
@@ -94,8 +96,12 @@ pub trait Provider: Send + Sync {
     fn create(&self, resource: &Resource) -> BoxFuture<'_, ProviderResult<State>>;
 
     /// Update a resource
-    fn update(&self, id: &ResourceId, from: &State, to: &Resource)
-        -> BoxFuture<'_, ProviderResult<State>>;
+    fn update(
+        &self,
+        id: &ResourceId,
+        from: &State,
+        to: &Resource,
+    ) -> BoxFuture<'_, ProviderResult<State>>;
 
     /// Delete a resource
     fn delete(&self, id: &ResourceId) -> BoxFuture<'_, ProviderResult<()>>;

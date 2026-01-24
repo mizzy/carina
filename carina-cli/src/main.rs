@@ -11,11 +11,10 @@ use carina_core::interpreter::{EffectOutcome, Interpreter};
 use carina_core::parser::{self, ParsedFile};
 use carina_core::plan::Plan;
 use carina_core::provider::{BoxFuture, Provider, ProviderError, ProviderResult, ResourceType};
-use carina_core::providers::s3;
 use carina_core::resource::{Resource, ResourceId, State, Value};
-use carina_core::schema::ResourceSchema;
 
 use carina_provider_aws::AwsProvider;
+use carina_provider_aws::validation::validate_resource;
 
 #[derive(Parser)]
 #[command(name = "carina")]
@@ -63,27 +62,17 @@ async fn main() {
     }
 }
 
-fn get_schemas() -> HashMap<String, ResourceSchema> {
-    let mut schemas = HashMap::new();
-    for schema in s3::schemas() {
-        schemas.insert(schema.resource_type.clone(), schema);
-    }
-    schemas
-}
-
 fn validate_resources(resources: &[Resource]) -> Result<(), String> {
-    let schemas = get_schemas();
     let mut all_errors = Vec::new();
 
     for resource in resources {
-        if let Some(schema) = schemas.get(&resource.id.resource_type) {
-            if let Err(errors) = schema.validate(&resource.attributes) {
-                for error in errors {
-                    all_errors.push(format!(
-                        "{}.{}: {}",
-                        resource.id.resource_type, resource.id.name, error
-                    ));
-                }
+        // Use CloudFormation schema-based validation
+        if let Err(errors) = validate_resource(&resource.id.resource_type, &resource.attributes) {
+            for error in errors {
+                all_errors.push(format!(
+                    "{}.{}: {}",
+                    resource.id.resource_type, resource.id.name, error
+                ));
             }
         }
     }
@@ -123,8 +112,8 @@ fn run_validate(file: &PathBuf) -> Result<(), String> {
 }
 
 async fn run_plan(file: &PathBuf) -> Result<(), String> {
-    let content =
-        fs::read_to_string(file).map_err(|e| format!("Failed to read {}: {}", file.display(), e))?;
+    let content = fs::read_to_string(file)
+        .map_err(|e| format!("Failed to read {}: {}", file.display(), e))?;
 
     let parsed = parser::parse_and_resolve(&content).map_err(|e| format!("Parse error: {}", e))?;
 
@@ -136,8 +125,8 @@ async fn run_plan(file: &PathBuf) -> Result<(), String> {
 }
 
 async fn run_apply(file: &PathBuf) -> Result<(), String> {
-    let content =
-        fs::read_to_string(file).map_err(|e| format!("Failed to read {}: {}", file.display(), e))?;
+    let content = fs::read_to_string(file)
+        .map_err(|e| format!("Failed to read {}: {}", file.display(), e))?;
 
     let parsed = parser::parse_and_resolve(&content).map_err(|e| format!("Parse error: {}", e))?;
 
@@ -210,17 +199,17 @@ async fn run_apply(file: &PathBuf) -> Result<(), String> {
 /// Get region from provider configuration
 fn get_aws_region(parsed: &ParsedFile) -> String {
     for provider in &parsed.providers {
-        if provider.name == "aws" {
-            if let Some(Value::String(region)) = provider.attributes.get("region") {
-                // Convert from aws.Region.ap_northeast_1 format to ap-northeast-1 format
-                if region.starts_with("aws.Region.") {
-                    return region
-                        .strip_prefix("aws.Region.")
-                        .unwrap_or(region)
-                        .replace('_', "-");
-                }
-                return region.clone();
+        if provider.name == "aws"
+            && let Some(Value::String(region)) = provider.attributes.get("region")
+        {
+            // Convert from aws.Region.ap_northeast_1 format to ap-northeast-1 format
+            if region.starts_with("aws.Region.") {
+                return region
+                    .strip_prefix("aws.Region.")
+                    .unwrap_or(region)
+                    .replace('_', "-");
             }
+            return region.clone();
         }
     }
     // Default region

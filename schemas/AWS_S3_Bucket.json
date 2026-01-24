@@ -1,0 +1,172 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "typeName": "AWS::S3::Bucket",
+  "description": "The AWS::S3::Bucket resource creates an Amazon S3 bucket in the same AWS Region where you create the AWS CloudFormation stack.",
+  "definitions": {
+    "AccelerateConfiguration": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "AccelerationStatus": {
+          "description": "Specifies the transfer acceleration status of the bucket.",
+          "type": "string",
+          "enum": ["Enabled", "Suspended"]
+        }
+      },
+      "required": ["AccelerationStatus"]
+    },
+    "VersioningConfiguration": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "Status": {
+          "type": "string",
+          "enum": ["Enabled", "Suspended"]
+        }
+      },
+      "required": ["Status"]
+    },
+    "LifecycleConfiguration": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "Rules": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Rule"
+          }
+        }
+      },
+      "required": ["Rules"]
+    },
+    "Rule": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "Id": {
+          "type": "string"
+        },
+        "Status": {
+          "type": "string",
+          "enum": ["Enabled", "Disabled"]
+        },
+        "ExpirationInDays": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "Prefix": {
+          "type": "string"
+        }
+      },
+      "required": ["Status"]
+    },
+    "Tag": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "Key": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "Value": {
+          "type": "string",
+          "maxLength": 256
+        }
+      },
+      "required": ["Key", "Value"]
+    },
+    "PublicAccessBlockConfiguration": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "BlockPublicAcls": {
+          "type": "boolean"
+        },
+        "BlockPublicPolicy": {
+          "type": "boolean"
+        },
+        "IgnorePublicAcls": {
+          "type": "boolean"
+        },
+        "RestrictPublicBuckets": {
+          "type": "boolean"
+        }
+      }
+    }
+  },
+  "properties": {
+    "BucketName": {
+      "description": "A name for the bucket. If you don't specify a name, AWS CloudFormation generates a unique ID and uses that ID for the bucket name.",
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 63,
+      "pattern": "^[a-z0-9][a-z0-9.-]*[a-z0-9]$"
+    },
+    "AccelerateConfiguration": {
+      "$ref": "#/definitions/AccelerateConfiguration"
+    },
+    "VersioningConfiguration": {
+      "$ref": "#/definitions/VersioningConfiguration"
+    },
+    "LifecycleConfiguration": {
+      "$ref": "#/definitions/LifecycleConfiguration"
+    },
+    "Tags": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/Tag"
+      }
+    },
+    "PublicAccessBlockConfiguration": {
+      "$ref": "#/definitions/PublicAccessBlockConfiguration"
+    },
+    "Arn": {
+      "description": "The Amazon Resource Name (ARN) of the specified resource.",
+      "type": "string"
+    },
+    "DomainName": {
+      "description": "The IPv4 DNS name of the specified bucket.",
+      "type": "string"
+    },
+    "DualStackDomainName": {
+      "description": "The IPv6 DNS name of the specified bucket.",
+      "type": "string"
+    },
+    "RegionalDomainName": {
+      "description": "The regional domain name of the specified bucket.",
+      "type": "string"
+    },
+    "WebsiteURL": {
+      "description": "The Amazon S3 website endpoint for the specified bucket.",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "primaryIdentifier": ["/properties/BucketName"],
+  "readOnlyProperties": [
+    "/properties/Arn",
+    "/properties/DomainName",
+    "/properties/DualStackDomainName",
+    "/properties/RegionalDomainName",
+    "/properties/WebsiteURL"
+  ],
+  "createOnlyProperties": ["/properties/BucketName"],
+  "handlers": {
+    "create": {
+      "permissions": ["s3:CreateBucket", "s3:PutBucketTagging", "s3:PutBucketVersioning"]
+    },
+    "read": {
+      "permissions": ["s3:GetBucketTagging", "s3:GetBucketVersioning", "s3:GetBucketAcl"]
+    },
+    "update": {
+      "permissions": ["s3:PutBucketTagging", "s3:PutBucketVersioning"]
+    },
+    "delete": {
+      "permissions": ["s3:DeleteBucket"]
+    },
+    "list": {
+      "permissions": ["s3:ListAllMyBuckets"]
+    }
+  }
+}

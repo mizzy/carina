@@ -1,18 +1,30 @@
-//! Carina AWS Provider
+//! AWS Cloud Control API Provider
 //!
-//! AWS Provider implementation
+//! Uses AWS Cloud Control API for resource management, enabling a unified
+//! approach to managing AWS resources with CloudFormation-compatible schemas.
+//!
+//! Carina DSL uses snake_case for attribute names, which are automatically
+//! converted to CloudFormation's CamelCase format.
 
 use std::collections::HashMap;
+use std::time::Duration;
 
-use aws_config::Region;
-use aws_sdk_s3::Client as S3Client;
+use aws_sdk_cloudcontrol::Client as CloudControlClient;
+use aws_sdk_cloudcontrol::operation::get_resource_request_status::GetResourceRequestStatusOutput;
+use aws_sdk_cloudcontrol::types::OperationStatus;
 use carina_core::provider::{
     BoxFuture, Provider, ProviderError, ProviderResult, ResourceSchema, ResourceType,
 };
 use carina_core::resource::{Resource, ResourceId, State, Value};
 
-/// S3 Bucket resource type
-pub struct S3BucketType;
+pub mod case_convert;
+pub mod generated;
+pub mod validation;
+
+use case_convert::{attributes_to_camel_case, attributes_to_snake_case};
+
+/// Resource type for S3 Bucket
+struct S3BucketType;
 
 impl ResourceType for S3BucketType {
     fn name(&self) -> &'static str {
@@ -24,287 +36,234 @@ impl ResourceType for S3BucketType {
     }
 }
 
-/// AWS Provider
+/// AWS Provider using Cloud Control API
 pub struct AwsProvider {
-    s3_client: S3Client,
+    client: CloudControlClient,
     region: String,
 }
 
 impl AwsProvider {
     /// Create a new AWS Provider
-    pub async fn new(region: &str) -> Self {
-        let config = aws_config::defaults(aws_config::BehaviorVersion::latest())
-            .region(Region::new(region.to_string()))
+    pub async fn new(region: impl Into<String>) -> Self {
+        let region_str = region.into();
+        let config = aws_config::from_env()
+            .region(aws_config::Region::new(region_str.clone()))
             .load()
             .await;
+        let client = CloudControlClient::new(&config);
 
         Self {
-            s3_client: S3Client::new(&config),
-            region: region.to_string(),
+            client,
+            region: region_str,
         }
     }
 
-    /// Create with a specific S3 client (for testing)
-    pub fn with_client(s3_client: S3Client, region: String) -> Self {
-        Self { s3_client, region }
+    /// Create an AWS Provider with a custom client (for testing)
+    pub fn with_client(client: CloudControlClient, region: impl Into<String>) -> Self {
+        Self {
+            client,
+            region: region.into(),
+        }
     }
 
-    /// Read an S3 bucket
-    async fn read_s3_bucket(&self, name: &str) -> ProviderResult<State> {
-        let id = ResourceId::new("s3_bucket", name);
+    /// Get the region this provider is configured for
+    pub fn region(&self) -> &str {
+        &self.region
+    }
 
-        match self.s3_client.head_bucket().bucket(name).send().await {
-            Ok(_) => {
-                let mut attributes = HashMap::new();
-                attributes.insert("name".to_string(), Value::String(name.to_string()));
-                // Return region in DSL format
-                let region_dsl = format!("aws.Region.{}", self.region.replace('-', "_"));
-                attributes.insert("region".to_string(), Value::String(region_dsl));
+    /// Convert internal resource type to CloudFormation type name
+    fn to_cf_type_name(resource_type: &str) -> Result<&'static str, ProviderError> {
+        match resource_type {
+            "s3_bucket" => Ok("AWS::S3::Bucket"),
+            _ => Err(ProviderError::new(format!(
+                "Unknown resource type: {}",
+                resource_type
+            ))),
+        }
+    }
 
-                // Get versioning status
-                if let Ok(versioning) = self
-                    .s3_client
-                    .get_bucket_versioning()
-                    .bucket(name)
-                    .send()
-                    .await
-                {
-                    let enabled = versioning
-                        .status()
-                        .map(|s| s.as_str() == "Enabled")
-                        .unwrap_or(false);
-                    attributes.insert("versioning".to_string(), Value::Bool(enabled));
-                }
-
-                // Get lifecycle configuration
-                if let Ok(lifecycle) = self
-                    .s3_client
-                    .get_bucket_lifecycle_configuration()
-                    .bucket(name)
-                    .send()
-                    .await
-                {
-                    for rule in lifecycle.rules() {
-                        if rule.id() == Some("auto-expiration") {
-                            if let Some(expiration) = rule.expiration() {
-                                if let Some(days) = expiration.days {
-                                    attributes.insert(
-                                        "expiration_days".to_string(),
-                                        Value::Int(days as i64),
-                                    );
-                                }
-                            }
-                        }
-                    }
-                }
-
-                Ok(State::existing(id, attributes))
+    /// Convert Value to serde_json::Value
+    fn value_to_json(value: &Value) -> serde_json::Value {
+        match value {
+            Value::String(s) => serde_json::Value::String(s.clone()),
+            Value::Int(i) => serde_json::Value::Number((*i).into()),
+            Value::Bool(b) => serde_json::Value::Bool(*b),
+            Value::List(items) => {
+                serde_json::Value::Array(items.iter().map(Self::value_to_json).collect())
             }
-            Err(err) => {
-                // Handle bucket not found
-                use aws_sdk_s3::error::SdkError;
-
-                let is_not_found = match &err {
-                    SdkError::ServiceError(service_err) => {
-                        // NotFound error or 301/403/404 status codes
-                        // 403 is returned when bucket doesn't exist or is owned by another account
-                        let status = service_err.raw().status().as_u16();
-                        service_err.err().is_not_found()
-                            || status == 301
-                            || status == 403
-                            || status == 404
-                    }
-                    _ => false,
-                };
-
-                if is_not_found {
-                    Ok(State::not_found(id))
-                } else {
-                    Err(ProviderError::new(format!("Failed to read bucket: {:?}", err))
-                        .for_resource(id))
-                }
+            Value::Map(map) => {
+                let obj: serde_json::Map<String, serde_json::Value> = map
+                    .iter()
+                    .map(|(k, v)| (k.clone(), Self::value_to_json(v)))
+                    .collect();
+                serde_json::Value::Object(obj)
+            }
+            Value::ResourceRef(binding, attr) => {
+                // Resource references should be resolved before this point
+                serde_json::Value::String(format!("${{{}:{}}}", binding, attr))
             }
         }
     }
 
-    /// Create an S3 bucket
-    async fn create_s3_bucket(&self, resource: Resource) -> ProviderResult<State> {
-        let bucket_name = match resource.attributes.get("name") {
-            Some(Value::String(s)) => s.clone(),
-            _ => {
-                return Err(ProviderError::new("Bucket name is required")
-                    .for_resource(resource.id.clone()));
+    /// Convert serde_json::Value to Value
+    fn json_to_value(json: &serde_json::Value) -> Option<Value> {
+        match json {
+            serde_json::Value::Null => None,
+            serde_json::Value::Bool(b) => Some(Value::Bool(*b)),
+            serde_json::Value::Number(n) => n.as_i64().map(Value::Int),
+            serde_json::Value::String(s) => Some(Value::String(s.clone())),
+            serde_json::Value::Array(arr) => {
+                let items: Vec<Value> = arr.iter().filter_map(Self::json_to_value).collect();
+                Some(Value::List(items))
             }
-        };
-
-        // Get region (use Provider's region if not specified)
-        let region = match resource.attributes.get("region") {
-            Some(Value::String(s)) => {
-                // Convert from aws.Region.ap_northeast_1 format to ap-northeast-1 format
-                convert_region_value(s)
+            serde_json::Value::Object(obj) => {
+                let map: HashMap<String, Value> = obj
+                    .iter()
+                    .filter_map(|(k, v)| Self::json_to_value(v).map(|val| (k.clone(), val)))
+                    .collect();
+                Some(Value::Map(map))
             }
-            _ => self.region.clone(),
-        };
-
-        // Create bucket
-        let mut req = self.s3_client.create_bucket().bucket(&bucket_name);
-
-        // Specify LocationConstraint for regions other than us-east-1
-        if region != "us-east-1" {
-            use aws_sdk_s3::types::{BucketLocationConstraint, CreateBucketConfiguration};
-            let constraint = BucketLocationConstraint::from(region.as_str());
-            let config = CreateBucketConfiguration::builder()
-                .location_constraint(constraint)
-                .build();
-            req = req.create_bucket_configuration(config);
         }
+    }
 
-        req.send().await.map_err(|e| {
-            ProviderError::new(format!("Failed to create bucket: {:?}", e))
-                .for_resource(resource.id.clone())
-        })?;
+    /// Convert resource attributes to JSON for Cloud Control API
+    /// Converts snake_case keys to CamelCase for CloudFormation compatibility
+    fn attributes_to_json(attributes: &HashMap<String, Value>) -> String {
+        let camel_case_attrs = attributes_to_camel_case(attributes);
+        let obj: serde_json::Map<String, serde_json::Value> = camel_case_attrs
+            .iter()
+            .map(|(k, v)| (k.clone(), Self::value_to_json(v)))
+            .collect();
+        serde_json::to_string(&serde_json::Value::Object(obj)).unwrap_or_default()
+    }
 
-        // Configure versioning
-        if let Some(Value::Bool(true)) = resource.attributes.get("versioning") {
-            use aws_sdk_s3::types::{BucketVersioningStatus, VersioningConfiguration};
-            let config = VersioningConfiguration::builder()
-                .status(BucketVersioningStatus::Enabled)
-                .build();
-            self.s3_client
-                .put_bucket_versioning()
-                .bucket(&bucket_name)
-                .versioning_configuration(config)
+    /// Parse JSON properties from Cloud Control API response
+    /// Converts CamelCase keys to snake_case for Carina DSL compatibility
+    fn parse_properties(properties: &str) -> HashMap<String, Value> {
+        match serde_json::from_str::<serde_json::Value>(properties) {
+            Ok(serde_json::Value::Object(obj)) => {
+                let camel_case_attrs: HashMap<String, Value> = obj
+                    .iter()
+                    .filter_map(|(k, v)| Self::json_to_value(v).map(|val| (k.clone(), val)))
+                    .collect();
+                attributes_to_snake_case(&camel_case_attrs)
+            }
+            _ => HashMap::new(),
+        }
+    }
+
+    /// Get the identifier for a resource
+    /// Supports both snake_case (bucket_name) and CamelCase (BucketName) attribute names
+    fn get_identifier(resource_type: &str, resource: &Resource) -> Result<String, ProviderError> {
+        match resource_type {
+            "s3_bucket" => {
+                // For S3 buckets, the identifier is the BucketName (or bucket_name)
+                resource
+                    .attributes
+                    .get("bucket_name")
+                    .or_else(|| resource.attributes.get("BucketName"))
+                    .and_then(|v| match v {
+                        Value::String(s) => Some(s.clone()),
+                        _ => None,
+                    })
+                    .ok_or_else(|| ProviderError::new("bucket_name is required for s3_bucket"))
+            }
+            _ => Err(ProviderError::new(format!(
+                "Unknown resource type: {}",
+                resource_type
+            ))),
+        }
+    }
+
+    /// Wait for an operation to complete
+    async fn wait_for_completion(
+        &self,
+        request_token: &str,
+    ) -> ProviderResult<GetResourceRequestStatusOutput> {
+        let max_attempts = 60; // 2 minutes with 2-second intervals
+        let mut attempts = 0;
+
+        loop {
+            let result = self
+                .client
+                .get_resource_request_status()
+                .request_token(request_token)
                 .send()
                 .await
                 .map_err(|e| {
-                    ProviderError::new(format!("Failed to enable versioning: {}", e))
-                        .for_resource(resource.id.clone())
+                    ProviderError::new(format!("Failed to get operation status: {}", e))
                 })?;
+
+            if let Some(event) = result.progress_event() {
+                match event.operation_status() {
+                    Some(OperationStatus::Success) => return Ok(result),
+                    Some(OperationStatus::Failed) => {
+                        let msg = event.status_message().unwrap_or("Unknown error");
+                        return Err(ProviderError::new(format!("Operation failed: {}", msg)));
+                    }
+                    Some(OperationStatus::CancelComplete) => {
+                        return Err(ProviderError::new("Operation was cancelled"));
+                    }
+                    _ => {
+                        // Still in progress (Pending, InProgress, CancelInProgress)
+                    }
+                }
+            }
+
+            attempts += 1;
+            if attempts >= max_attempts {
+                return Err(ProviderError::new("Operation timed out"));
+            }
+
+            tokio::time::sleep(Duration::from_secs(2)).await;
         }
-
-        // Configure lifecycle rule (expiration_days)
-        if let Some(Value::Int(days)) = resource.attributes.get("expiration_days") {
-            use aws_sdk_s3::types::{
-                BucketLifecycleConfiguration, ExpirationStatus, LifecycleExpiration,
-                LifecycleRule, LifecycleRuleFilter,
-            };
-            let expiration = LifecycleExpiration::builder().days(*days as i32).build();
-            let filter = LifecycleRuleFilter::builder().prefix("").build();
-            let rule = LifecycleRule::builder()
-                .id("auto-expiration")
-                .status(ExpirationStatus::Enabled)
-                .filter(filter)
-                .expiration(expiration)
-                .build()
-                .map_err(|e| {
-                    ProviderError::new(format!("Failed to build lifecycle rule: {}", e))
-                        .for_resource(resource.id.clone())
-                })?;
-
-            let config = BucketLifecycleConfiguration::builder()
-                .rules(rule)
-                .build()
-                .map_err(|e| {
-                    ProviderError::new(format!("Failed to build lifecycle config: {}", e))
-                        .for_resource(resource.id.clone())
-                })?;
-
-            self.s3_client
-                .put_bucket_lifecycle_configuration()
-                .bucket(&bucket_name)
-                .lifecycle_configuration(config)
-                .send()
-                .await
-                .map_err(|e| {
-                    ProviderError::new(format!("Failed to set lifecycle: {}", e))
-                        .for_resource(resource.id.clone())
-                })?;
-        }
-
-        // Return state after creation
-        self.read_s3_bucket(&bucket_name).await
     }
 
-    /// Update an S3 bucket
-    async fn update_s3_bucket(&self, id: ResourceId, to: Resource) -> ProviderResult<State> {
-        let bucket_name = id.name.clone();
+    /// Generate JSON Patch document for update operation
+    /// Converts snake_case keys to CamelCase for CloudFormation compatibility
+    fn generate_patch(from: &State, to: &Resource) -> Result<String, ProviderError> {
+        let mut patches = Vec::new();
 
-        // Update versioning configuration
-        if let Some(Value::Bool(enabled)) = to.attributes.get("versioning") {
-            use aws_sdk_s3::types::{BucketVersioningStatus, VersioningConfiguration};
-            let status = if *enabled {
-                BucketVersioningStatus::Enabled
+        // Convert to CamelCase for comparison and patching
+        let from_camel = attributes_to_camel_case(&from.attributes);
+        let to_camel = attributes_to_camel_case(&to.attributes);
+
+        // Find attributes that need to be added or modified
+        for (key, new_value) in &to_camel {
+            let new_json = Self::value_to_json(new_value);
+
+            if let Some(old_value) = from_camel.get(key) {
+                let old_json = Self::value_to_json(old_value);
+                if old_json != new_json {
+                    // Replace existing value
+                    patches.push(serde_json::json!({
+                        "op": "replace",
+                        "path": format!("/{}", key),
+                        "value": new_json
+                    }));
+                }
             } else {
-                BucketVersioningStatus::Suspended
-            };
-            let config = VersioningConfiguration::builder().status(status).build();
-            self.s3_client
-                .put_bucket_versioning()
-                .bucket(&bucket_name)
-                .versioning_configuration(config)
-                .send()
-                .await
-                .map_err(|e| {
-                    ProviderError::new(format!("Failed to update versioning: {}", e))
-                        .for_resource(id.clone())
-                })?;
+                // Add new attribute
+                patches.push(serde_json::json!({
+                    "op": "add",
+                    "path": format!("/{}", key),
+                    "value": new_json
+                }));
+            }
         }
 
-        // Update lifecycle rule (expiration_days)
-        if let Some(Value::Int(days)) = to.attributes.get("expiration_days") {
-            use aws_sdk_s3::types::{
-                BucketLifecycleConfiguration, ExpirationStatus, LifecycleExpiration,
-                LifecycleRule, LifecycleRuleFilter,
-            };
-            let expiration = LifecycleExpiration::builder().days(*days as i32).build();
-            let filter = LifecycleRuleFilter::builder().prefix("").build();
-            let rule = LifecycleRule::builder()
-                .id("auto-expiration")
-                .status(ExpirationStatus::Enabled)
-                .filter(filter)
-                .expiration(expiration)
-                .build()
-                .map_err(|e| {
-                    ProviderError::new(format!("Failed to build lifecycle rule: {}", e))
-                        .for_resource(id.clone())
-                })?;
-
-            let config = BucketLifecycleConfiguration::builder()
-                .rules(rule)
-                .build()
-                .map_err(|e| {
-                    ProviderError::new(format!("Failed to build lifecycle config: {}", e))
-                        .for_resource(id.clone())
-                })?;
-
-            self.s3_client
-                .put_bucket_lifecycle_configuration()
-                .bucket(&bucket_name)
-                .lifecycle_configuration(config)
-                .send()
-                .await
-                .map_err(|e| {
-                    ProviderError::new(format!("Failed to set lifecycle: {}", e))
-                        .for_resource(id.clone())
-                })?;
+        // Find attributes that need to be removed
+        for key in from_camel.keys() {
+            if !to_camel.contains_key(key) {
+                patches.push(serde_json::json!({
+                    "op": "remove",
+                    "path": format!("/{}", key)
+                }));
+            }
         }
 
-        self.read_s3_bucket(&bucket_name).await
-    }
-
-    /// Delete an S3 bucket
-    async fn delete_s3_bucket(&self, id: ResourceId) -> ProviderResult<()> {
-        self.s3_client
-            .delete_bucket()
-            .bucket(&id.name)
-            .send()
-            .await
-            .map_err(|e| {
-                ProviderError::new(format!("Failed to delete bucket: {}", e))
-                    .for_resource(id.clone())
-            })?;
-
-        Ok(())
+        serde_json::to_string(&patches)
+            .map_err(|e| ProviderError::new(format!("Failed to serialize patch: {}", e)))
     }
 }
 
@@ -320,12 +279,41 @@ impl Provider for AwsProvider {
     fn read(&self, id: &ResourceId) -> BoxFuture<'_, ProviderResult<State>> {
         let id = id.clone();
         Box::pin(async move {
-            match id.resource_type.as_str() {
-                "s3_bucket" => self.read_s3_bucket(&id.name).await,
-                _ => Err(
-                    ProviderError::new(format!("Unknown resource type: {}", id.resource_type))
-                        .for_resource(id.clone()),
-                ),
+            let type_name = Self::to_cf_type_name(&id.resource_type)?;
+
+            let result = self
+                .client
+                .get_resource()
+                .type_name(type_name)
+                .identifier(&id.name)
+                .send()
+                .await;
+
+            match result {
+                Ok(output) => {
+                    let attributes = output
+                        .resource_description()
+                        .and_then(|d| d.properties())
+                        .map(Self::parse_properties)
+                        .unwrap_or_default();
+
+                    Ok(State::existing(id, attributes))
+                }
+                Err(e) => {
+                    // Check if this is a "not found" error
+                    let error_str = e.to_string();
+                    if error_str.contains("ResourceNotFoundException")
+                        || error_str.contains("NotFound")
+                        || error_str.contains("does not exist")
+                    {
+                        Ok(State::not_found(id))
+                    } else {
+                        Err(
+                            ProviderError::new(format!("Failed to read resource: {}", e))
+                                .for_resource(id),
+                        )
+                    }
+                }
             }
         })
     }
@@ -333,60 +321,115 @@ impl Provider for AwsProvider {
     fn create(&self, resource: &Resource) -> BoxFuture<'_, ProviderResult<State>> {
         let resource = resource.clone();
         Box::pin(async move {
-            match resource.id.resource_type.as_str() {
-                "s3_bucket" => self.create_s3_bucket(resource).await,
-                _ => Err(ProviderError::new(format!(
-                    "Unknown resource type: {}",
-                    resource.id.resource_type
-                ))
-                .for_resource(resource.id.clone())),
+            let type_name = Self::to_cf_type_name(&resource.id.resource_type)?;
+            let desired_state = Self::attributes_to_json(&resource.attributes);
+            let identifier = Self::get_identifier(&resource.id.resource_type, &resource)?;
+
+            let result = self
+                .client
+                .create_resource()
+                .type_name(type_name)
+                .desired_state(&desired_state)
+                .send()
+                .await
+                .map_err(|e| {
+                    ProviderError::new(format!("Failed to create resource: {}", e))
+                        .for_resource(resource.id.clone())
+                })?;
+
+            // Wait for completion
+            if let Some(event) = result.progress_event()
+                && let Some(token) = event.request_token()
+            {
+                self.wait_for_completion(token).await?;
             }
+
+            // Read back the created resource
+            let new_id = ResourceId::new(&resource.id.resource_type, identifier);
+            self.read(&new_id).await
         })
     }
 
     fn update(
         &self,
         id: &ResourceId,
-        _from: &State,
+        from: &State,
         to: &Resource,
     ) -> BoxFuture<'_, ProviderResult<State>> {
         let id = id.clone();
+        let from = from.clone();
         let to = to.clone();
         Box::pin(async move {
-            match id.resource_type.as_str() {
-                "s3_bucket" => self.update_s3_bucket(id, to).await,
-                _ => Err(ProviderError::new(format!(
-                    "Unknown resource type: {}",
-                    id.resource_type
-                ))
-                .for_resource(id.clone())),
+            let type_name = Self::to_cf_type_name(&id.resource_type)?;
+            let patch = Self::generate_patch(&from, &to)?;
+
+            let result = self
+                .client
+                .update_resource()
+                .type_name(type_name)
+                .identifier(&id.name)
+                .patch_document(&patch)
+                .send()
+                .await
+                .map_err(|e| {
+                    ProviderError::new(format!("Failed to update resource: {}", e))
+                        .for_resource(id.clone())
+                })?;
+
+            // Wait for completion
+            if let Some(event) = result.progress_event()
+                && let Some(token) = event.request_token()
+            {
+                self.wait_for_completion(token).await?;
             }
+
+            // Read back the updated resource
+            self.read(&id).await
         })
     }
 
     fn delete(&self, id: &ResourceId) -> BoxFuture<'_, ProviderResult<()>> {
         let id = id.clone();
         Box::pin(async move {
-            match id.resource_type.as_str() {
-                "s3_bucket" => self.delete_s3_bucket(id).await,
-                _ => Err(
-                    ProviderError::new(format!("Unknown resource type: {}", id.resource_type))
-                        .for_resource(id.clone()),
-                ),
+            let type_name = Self::to_cf_type_name(&id.resource_type)?;
+
+            let result = self
+                .client
+                .delete_resource()
+                .type_name(type_name)
+                .identifier(&id.name)
+                .send()
+                .await
+                .map_err(|e| {
+                    ProviderError::new(format!("Failed to delete resource: {}", e))
+                        .for_resource(id.clone())
+                })?;
+
+            // Wait for completion
+            if let Some(event) = result.progress_event()
+                && let Some(token) = event.request_token()
+            {
+                self.wait_for_completion(token).await?;
             }
+
+            Ok(())
         })
     }
 }
 
-/// Convert DSL region value (aws.Region.ap_northeast_1) to AWS SDK format (ap-northeast-1)
-fn convert_region_value(value: &str) -> String {
-    if value.starts_with("aws.Region.") {
-        value
-            .strip_prefix("aws.Region.")
-            .unwrap_or(value)
-            .replace('_', "-")
-    } else {
-        value.to_string()
+/// Convert DSL region format to AWS SDK format
+/// "aws.Region.ap_northeast_1" -> "ap-northeast-1"
+pub fn convert_region_value(value: &Value) -> Option<String> {
+    match value {
+        Value::String(s) => {
+            if s.starts_with("aws.Region.") {
+                let region_part = s.strip_prefix("aws.Region.")?;
+                Some(region_part.replace('_', "-"))
+            } else {
+                Some(s.clone())
+            }
+        }
+        _ => None,
     }
 }
 
@@ -396,20 +439,88 @@ mod tests {
 
     #[test]
     fn test_convert_region_value() {
+        let value = Value::String("aws.Region.ap_northeast_1".to_string());
         assert_eq!(
-            convert_region_value("aws.Region.ap_northeast_1"),
-            "ap-northeast-1"
+            convert_region_value(&value),
+            Some("ap-northeast-1".to_string())
         );
-        assert_eq!(
-            convert_region_value("aws.Region.us_east_1"),
-            "us-east-1"
-        );
-        assert_eq!(convert_region_value("eu-west-1"), "eu-west-1");
+
+        let value = Value::String("us-west-2".to_string());
+        assert_eq!(convert_region_value(&value), Some("us-west-2".to_string()));
     }
 
     #[test]
     fn test_s3_bucket_type_name() {
         let bucket_type = S3BucketType;
         assert_eq!(bucket_type.name(), "s3_bucket");
+    }
+
+    #[test]
+    fn test_to_cf_type_name() {
+        assert_eq!(
+            AwsProvider::to_cf_type_name("s3_bucket").unwrap(),
+            "AWS::S3::Bucket"
+        );
+        assert!(AwsProvider::to_cf_type_name("unknown").is_err());
+    }
+
+    #[test]
+    fn test_value_to_json() {
+        let value = Value::String("test".to_string());
+        assert_eq!(
+            AwsProvider::value_to_json(&value),
+            serde_json::Value::String("test".to_string())
+        );
+
+        let value = Value::Int(42);
+        assert_eq!(
+            AwsProvider::value_to_json(&value),
+            serde_json::Value::Number(42.into())
+        );
+
+        let value = Value::Bool(true);
+        assert_eq!(
+            AwsProvider::value_to_json(&value),
+            serde_json::Value::Bool(true)
+        );
+    }
+
+    #[test]
+    fn test_json_to_value() {
+        let json = serde_json::Value::String("test".to_string());
+        assert_eq!(
+            AwsProvider::json_to_value(&json),
+            Some(Value::String("test".to_string()))
+        );
+
+        let json = serde_json::Value::Number(42.into());
+        assert_eq!(AwsProvider::json_to_value(&json), Some(Value::Int(42)));
+
+        let json = serde_json::Value::Bool(true);
+        assert_eq!(AwsProvider::json_to_value(&json), Some(Value::Bool(true)));
+    }
+
+    #[test]
+    fn test_generate_patch() {
+        let from = State::existing(
+            ResourceId::new("s3_bucket", "test-bucket"),
+            HashMap::from([
+                (
+                    "BucketName".to_string(),
+                    Value::String("test-bucket".to_string()),
+                ),
+                ("Old".to_string(), Value::String("value".to_string())),
+            ]),
+        );
+
+        let to = Resource::new("s3_bucket", "test-bucket")
+            .with_attribute("BucketName", Value::String("test-bucket".to_string()))
+            .with_attribute("New", Value::String("value".to_string()));
+
+        let patch = AwsProvider::generate_patch(&from, &to).unwrap();
+        let patches: Vec<serde_json::Value> = serde_json::from_str(&patch).unwrap();
+
+        // Should have add for "New" and remove for "Old"
+        assert_eq!(patches.len(), 2);
     }
 }

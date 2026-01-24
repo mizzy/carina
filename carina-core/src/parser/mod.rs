@@ -98,8 +98,7 @@ pub fn parse(input: &str) -> Result<ParsedFile, ParseError> {
                                 providers.push(provider);
                             }
                             Rule::let_binding => {
-                                let (name, value, maybe_resource) =
-                                    parse_let_binding(stmt, &ctx)?;
+                                let (name, value, maybe_resource) = parse_let_binding(stmt, &ctx)?;
                                 ctx.set_variable(name.clone(), value);
                                 if let Some(resource) = maybe_resource {
                                     ctx.set_resource_binding(name.clone(), resource.clone());
@@ -233,23 +232,17 @@ fn parse_anonymous_resource(
         }
     }
 
-    // Get resource name from name attribute
-    let resource_name = match attributes.get("name") {
-        Some(Value::String(s)) => s.clone(),
-        _ => {
-            return Err(ParseError::InvalidExpression {
-                line: 0,
-                message: "Anonymous resource must have a 'name' attribute".to_string(),
-            });
+    // Get resource name from identifier attribute (depends on resource type)
+    let resource_name = get_resource_identifier(&resource_type, &attributes).ok_or_else(|| {
+        ParseError::InvalidExpression {
+            line: 0,
+            message: "Anonymous resource must have an identifier attribute (e.g., 'bucket_name' for s3_bucket)".to_string(),
         }
-    };
+    })?;
 
     // Add provider information to attributes
     attributes.insert("_provider".to_string(), Value::String(provider.to_string()));
-    attributes.insert(
-        "_type".to_string(),
-        Value::String(namespaced_type.clone()),
-    );
+    attributes.insert("_type".to_string(), Value::String(namespaced_type.clone()));
 
     Ok(Resource {
         id: ResourceId::new(resource_type, resource_name),
@@ -286,26 +279,20 @@ fn parse_resource_expr(
         }
     }
 
-    // Get resource name from name attribute (same as anonymous resources)
-    let resource_name = match attributes.get("name") {
-        Some(Value::String(s)) => s.clone(),
-        _ => {
-            return Err(ParseError::InvalidExpression {
-                line: 0,
-                message: format!(
-                    "Resource bound to '{}' must have a 'name' attribute",
-                    binding_name
-                ),
-            });
+    // Get resource name from identifier attribute (same as anonymous resources)
+    let resource_name = get_resource_identifier(&resource_type, &attributes).ok_or_else(|| {
+        ParseError::InvalidExpression {
+            line: 0,
+            message: format!(
+                "Resource bound to '{}' must have an identifier attribute (e.g., 'bucket_name' for s3_bucket)",
+                binding_name
+            ),
         }
-    };
+    })?;
 
     // Add provider information to attributes
     attributes.insert("_provider".to_string(), Value::String(provider.to_string()));
-    attributes.insert(
-        "_type".to_string(),
-        Value::String(namespaced_type.clone()),
-    );
+    attributes.insert("_type".to_string(), Value::String(namespaced_type.clone()));
     // Save binding name (for reference)
     attributes.insert(
         "_binding".to_string(),
@@ -316,6 +303,27 @@ fn parse_resource_expr(
         id: ResourceId::new(resource_type, resource_name),
         attributes,
     })
+}
+
+/// Get the identifier attribute for a resource type
+/// Supports both snake_case (Carina style) and CamelCase (CloudFormation style)
+fn get_resource_identifier(
+    resource_type: &str,
+    attributes: &HashMap<String, Value>,
+) -> Option<String> {
+    // Try snake_case first (Carina style), then CamelCase (CloudFormation style), then legacy 'name'
+    let identifier_attrs = match resource_type {
+        "s3_bucket" => vec!["bucket_name", "BucketName", "name"],
+        _ => vec!["name"],
+    };
+
+    for attr in identifier_attrs {
+        if let Some(Value::String(s)) = attributes.get(attr) {
+            return Some(s.clone());
+        }
+    }
+
+    None
 }
 
 fn parse_expression(
@@ -368,6 +376,29 @@ fn parse_primary_value(
                 line: 0,
                 message: "Resource expressions can only be used in let bindings".to_string(),
             })
+        }
+        Rule::map_expr => {
+            // Map expression: { key = value, ... }
+            let mut map = HashMap::new();
+            for entry in inner.into_inner() {
+                if entry.as_rule() == Rule::map_entry {
+                    let mut entry_inner = entry.into_inner();
+                    let key = entry_inner.next().unwrap().as_str().to_string();
+                    let value = parse_expression(entry_inner.next().unwrap(), ctx)?;
+                    map.insert(key, value);
+                }
+            }
+            Ok(Value::Map(map))
+        }
+        Rule::list_expr => {
+            // List expression: [ value, value, ... ]
+            let mut list = Vec::new();
+            for expr in inner.into_inner() {
+                if expr.as_rule() == Rule::expression {
+                    list.push(parse_expression(expr, ctx)?);
+                }
+            }
+            Ok(Value::List(list))
         }
         Rule::namespaced_id => {
             // Namespaced identifier (e.g., aws.Region.ap_northeast_1)
@@ -437,10 +468,12 @@ fn parse_primary_value(
                     )))
                 }
             } else {
-                // Simple variable reference
+                // Simple variable reference or bare identifier (e.g., Enabled, Suspended)
                 match ctx.get_variable(first_ident) {
                     Some(val) => Ok(val.clone()),
-                    None => Err(ParseError::UndefinedVariable(first_ident.to_string())),
+                    // If not a defined variable, treat as a string literal
+                    // This allows writing Status = Enabled instead of Status = "Enabled"
+                    None => Ok(Value::String(first_ident.to_string())),
                 }
             }
         }
@@ -839,5 +872,99 @@ mod tests {
             result.resources[0].attributes.get("region"),
             Some(&Value::String("aws.Region.ap_northeast_1".to_string()))
         );
+    }
+
+    #[test]
+    fn parse_cloudformation_style_attributes() {
+        // Test CloudFormation-style attribute names (BucketName instead of name)
+        let input = r#"
+            aws.s3.bucket {
+                BucketName = "cf-style-bucket"
+                VersioningConfiguration = {
+                    Status = "Enabled"
+                }
+            }
+        "#;
+
+        let result = parse(input).unwrap();
+        assert_eq!(result.resources.len(), 1);
+
+        let resource = &result.resources[0];
+        assert_eq!(resource.id.resource_type, "s3_bucket");
+        assert_eq!(resource.id.name, "cf-style-bucket");
+        assert_eq!(
+            resource.attributes.get("BucketName"),
+            Some(&Value::String("cf-style-bucket".to_string()))
+        );
+
+        // Check nested map structure for VersioningConfiguration
+        if let Some(Value::Map(vc)) = resource.attributes.get("VersioningConfiguration") {
+            assert_eq!(
+                vc.get("Status"),
+                Some(&Value::String("Enabled".to_string()))
+            );
+        } else {
+            panic!("Expected VersioningConfiguration to be a Map");
+        }
+    }
+
+    #[test]
+    fn parse_snake_case_attributes() {
+        // Test snake_case attribute names (Carina style)
+        let input = r#"
+            aws.s3.bucket {
+                bucket_name = "snake-case-bucket"
+                versioning_configuration = {
+                    status = enabled
+                }
+            }
+        "#;
+
+        let result = parse(input).unwrap();
+        assert_eq!(result.resources.len(), 1);
+
+        let resource = &result.resources[0];
+        assert_eq!(resource.id.resource_type, "s3_bucket");
+        assert_eq!(resource.id.name, "snake-case-bucket");
+        assert_eq!(
+            resource.attributes.get("bucket_name"),
+            Some(&Value::String("snake-case-bucket".to_string()))
+        );
+
+        // Check nested map structure for versioning_configuration
+        if let Some(Value::Map(vc)) = resource.attributes.get("versioning_configuration") {
+            assert_eq!(
+                vc.get("status"),
+                Some(&Value::String("enabled".to_string()))
+            );
+        } else {
+            panic!("Expected versioning_configuration to be a Map");
+        }
+    }
+
+    #[test]
+    fn parse_bare_identifier_as_string() {
+        // Test that bare identifiers (like Enabled) are parsed as strings
+        let input = r#"
+            aws.s3.bucket {
+                BucketName = "my-bucket"
+                VersioningConfiguration = {
+                    Status = Enabled
+                }
+            }
+        "#;
+
+        let result = parse(input).unwrap();
+        let resource = &result.resources[0];
+
+        // Check that bare Enabled is parsed as string "Enabled"
+        if let Some(Value::Map(vc)) = resource.attributes.get("VersioningConfiguration") {
+            assert_eq!(
+                vc.get("Status"),
+                Some(&Value::String("Enabled".to_string()))
+            );
+        } else {
+            panic!("Expected VersioningConfiguration to be a Map");
+        }
     }
 }
