@@ -76,14 +76,14 @@ fn validate_resources(resources: &[Resource]) -> Result<(), String> {
     let mut all_errors = Vec::new();
 
     for resource in resources {
-        if let Some(schema) = schemas.get(&resource.id.resource_type) {
-            if let Err(errors) = schema.validate(&resource.attributes) {
-                for error in errors {
-                    all_errors.push(format!(
-                        "{}.{}: {}",
-                        resource.id.resource_type, resource.id.name, error
-                    ));
-                }
+        if let Some(schema) = schemas.get(&resource.id.resource_type)
+            && let Err(errors) = schema.validate(&resource.attributes)
+        {
+            for error in errors {
+                all_errors.push(format!(
+                    "{}.{}: {}",
+                    resource.id.resource_type, resource.id.name, error
+                ));
             }
         }
     }
@@ -123,8 +123,8 @@ fn run_validate(file: &PathBuf) -> Result<(), String> {
 }
 
 async fn run_plan(file: &PathBuf) -> Result<(), String> {
-    let content =
-        fs::read_to_string(file).map_err(|e| format!("Failed to read {}: {}", file.display(), e))?;
+    let content = fs::read_to_string(file)
+        .map_err(|e| format!("Failed to read {}: {}", file.display(), e))?;
 
     let parsed = parser::parse_and_resolve(&content).map_err(|e| format!("Parse error: {}", e))?;
 
@@ -136,8 +136,8 @@ async fn run_plan(file: &PathBuf) -> Result<(), String> {
 }
 
 async fn run_apply(file: &PathBuf) -> Result<(), String> {
-    let content =
-        fs::read_to_string(file).map_err(|e| format!("Failed to read {}: {}", file.display(), e))?;
+    let content = fs::read_to_string(file)
+        .map_err(|e| format!("Failed to read {}: {}", file.display(), e))?;
 
     let parsed = parser::parse_and_resolve(&content).map_err(|e| format!("Parse error: {}", e))?;
 
@@ -210,17 +210,17 @@ async fn run_apply(file: &PathBuf) -> Result<(), String> {
 /// Get region from provider configuration
 fn get_aws_region(parsed: &ParsedFile) -> String {
     for provider in &parsed.providers {
-        if provider.name == "aws" {
-            if let Some(Value::String(region)) = provider.attributes.get("region") {
-                // Convert from aws.Region.ap_northeast_1 format to ap-northeast-1 format
-                if region.starts_with("aws.Region.") {
-                    return region
-                        .strip_prefix("aws.Region.")
-                        .unwrap_or(region)
-                        .replace('_', "-");
-                }
-                return region.clone();
+        if provider.name == "aws"
+            && let Some(Value::String(region)) = provider.attributes.get("region")
+        {
+            // Convert from aws.Region.ap_northeast_1 format to ap-northeast-1 format
+            if region.starts_with("aws.Region.") {
+                return region
+                    .strip_prefix("aws.Region.")
+                    .unwrap_or(region)
+                    .replace('_', "-");
             }
+            return region.clone();
         }
     }
     // Default region

@@ -1,6 +1,6 @@
 //! S3 bucket schema definition
 
-use crate::schema::{types, AttributeSchema, AttributeType, ResourceSchema};
+use crate::schema::{AttributeSchema, AttributeType, ResourceSchema, types};
 
 /// Returns the schema for S3 buckets
 pub fn bucket_schema() -> ResourceSchema {

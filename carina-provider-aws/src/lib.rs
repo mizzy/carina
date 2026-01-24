@@ -85,15 +85,12 @@ impl AwsProvider {
                     .await
                 {
                     for rule in lifecycle.rules() {
-                        if rule.id() == Some("auto-expiration") {
-                            if let Some(expiration) = rule.expiration() {
-                                if let Some(days) = expiration.days {
-                                    attributes.insert(
-                                        "expiration_days".to_string(),
-                                        Value::Int(days as i64),
-                                    );
-                                }
-                            }
+                        if rule.id() == Some("auto-expiration")
+                            && let Some(expiration) = rule.expiration()
+                            && let Some(days) = expiration.days
+                        {
+                            attributes
+                                .insert("expiration_days".to_string(), Value::Int(days as i64));
                         }
                     }
                 }
@@ -120,8 +117,10 @@ impl AwsProvider {
                 if is_not_found {
                     Ok(State::not_found(id))
                 } else {
-                    Err(ProviderError::new(format!("Failed to read bucket: {:?}", err))
-                        .for_resource(id))
+                    Err(
+                        ProviderError::new(format!("Failed to read bucket: {:?}", err))
+                            .for_resource(id),
+                    )
                 }
             }
         }
@@ -132,8 +131,9 @@ impl AwsProvider {
         let bucket_name = match resource.attributes.get("name") {
             Some(Value::String(s)) => s.clone(),
             _ => {
-                return Err(ProviderError::new("Bucket name is required")
-                    .for_resource(resource.id.clone()));
+                return Err(
+                    ProviderError::new("Bucket name is required").for_resource(resource.id.clone())
+                );
             }
         };
 
@@ -185,8 +185,8 @@ impl AwsProvider {
         // Configure lifecycle rule (expiration_days)
         if let Some(Value::Int(days)) = resource.attributes.get("expiration_days") {
             use aws_sdk_s3::types::{
-                BucketLifecycleConfiguration, ExpirationStatus, LifecycleExpiration,
-                LifecycleRule, LifecycleRuleFilter,
+                BucketLifecycleConfiguration, ExpirationStatus, LifecycleExpiration, LifecycleRule,
+                LifecycleRuleFilter,
             };
             let expiration = LifecycleExpiration::builder().days(*days as i32).build();
             let filter = LifecycleRuleFilter::builder().prefix("").build();
@@ -253,8 +253,8 @@ impl AwsProvider {
         // Update lifecycle rule (expiration_days)
         if let Some(Value::Int(days)) = to.attributes.get("expiration_days") {
             use aws_sdk_s3::types::{
-                BucketLifecycleConfiguration, ExpirationStatus, LifecycleExpiration,
-                LifecycleRule, LifecycleRuleFilter,
+                BucketLifecycleConfiguration, ExpirationStatus, LifecycleExpiration, LifecycleRule,
+                LifecycleRuleFilter,
             };
             let expiration = LifecycleExpiration::builder().days(*days as i32).build();
             let filter = LifecycleRuleFilter::builder().prefix("").build();
@@ -322,10 +322,11 @@ impl Provider for AwsProvider {
         Box::pin(async move {
             match id.resource_type.as_str() {
                 "s3_bucket" => self.read_s3_bucket(&id.name).await,
-                _ => Err(
-                    ProviderError::new(format!("Unknown resource type: {}", id.resource_type))
-                        .for_resource(id.clone()),
-                ),
+                _ => Err(ProviderError::new(format!(
+                    "Unknown resource type: {}",
+                    id.resource_type
+                ))
+                .for_resource(id.clone())),
             }
         })
     }
@@ -369,10 +370,11 @@ impl Provider for AwsProvider {
         Box::pin(async move {
             match id.resource_type.as_str() {
                 "s3_bucket" => self.delete_s3_bucket(id).await,
-                _ => Err(
-                    ProviderError::new(format!("Unknown resource type: {}", id.resource_type))
-                        .for_resource(id.clone()),
-                ),
+                _ => Err(ProviderError::new(format!(
+                    "Unknown resource type: {}",
+                    id.resource_type
+                ))
+                .for_resource(id.clone())),
             }
         })
     }
@@ -400,10 +402,7 @@ mod tests {
             convert_region_value("aws.Region.ap_northeast_1"),
             "ap-northeast-1"
         );
-        assert_eq!(
-            convert_region_value("aws.Region.us_east_1"),
-            "us-east-1"
-        );
+        assert_eq!(convert_region_value("aws.Region.us_east_1"), "us-east-1");
         assert_eq!(convert_region_value("eu-west-1"), "eu-west-1");
     }
 
