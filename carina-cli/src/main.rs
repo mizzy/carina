@@ -13,7 +13,7 @@ use carina_core::interpreter::{EffectOutcome, Interpreter};
 use carina_core::parser::{self, ParsedFile};
 use carina_core::plan::Plan;
 use carina_core::provider::{BoxFuture, Provider, ProviderError, ProviderResult, ResourceType};
-use carina_core::providers::s3;
+use carina_core::providers::{ec2, s3};
 use carina_core::resource::{Resource, ResourceId, State, Value};
 use carina_core::schema::ResourceSchema;
 
@@ -92,6 +92,9 @@ async fn main() {
 fn get_schemas() -> HashMap<String, ResourceSchema> {
     let mut schemas = HashMap::new();
     for schema in s3::schemas() {
+        schemas.insert(schema.resource_type.clone(), schema);
+    }
+    for schema in ec2::schemas() {
         schemas.insert(schema.resource_type.clone(), schema);
     }
     schemas
