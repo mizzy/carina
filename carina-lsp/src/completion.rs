@@ -1,7 +1,7 @@
 use tower_lsp::lsp_types::{CompletionItem, CompletionItemKind, InsertTextFormat, Position};
 
 use crate::document::Document;
-use carina_core::providers::s3;
+use carina_core::providers::{ec2, s3};
 
 pub struct CompletionProvider;
 
@@ -88,35 +88,109 @@ impl CompletionProvider {
                 detail: Some("Define a named resource or variable".to_string()),
                 ..Default::default()
             },
+            // S3 resources
             CompletionItem {
                 label: "aws.s3.bucket".to_string(),
                 kind: Some(CompletionItemKind::CLASS),
-                insert_text: Some("aws.s3.bucket {\n    name = \"${1:bucket-name}\"\n    region = aws.Region.${2:ap_northeast_1}\n}".to_string()),
+                insert_text: Some("aws.s3.bucket {\n    name   = \"${1:bucket-name}\"\n    region = aws.Region.${2:ap_northeast_1}\n}".to_string()),
                 insert_text_format: Some(InsertTextFormat::SNIPPET),
                 detail: Some("S3 bucket resource".to_string()),
+                ..Default::default()
+            },
+            // VPC resources
+            CompletionItem {
+                label: "aws.vpc".to_string(),
+                kind: Some(CompletionItemKind::CLASS),
+                insert_text: Some("aws.vpc {\n    name       = \"${1:vpc-name}\"\n    region     = aws.Region.${2:ap_northeast_1}\n    cidr_block = \"${3:10.0.0.0/16}\"\n}".to_string()),
+                insert_text_format: Some(InsertTextFormat::SNIPPET),
+                detail: Some("VPC resource".to_string()),
+                ..Default::default()
+            },
+            CompletionItem {
+                label: "aws.subnet".to_string(),
+                kind: Some(CompletionItemKind::CLASS),
+                insert_text: Some("aws.subnet {\n    name              = \"${1:subnet-name}\"\n    region            = aws.Region.${2:ap_northeast_1}\n    vpc               = ${3:vpc_name}\n    cidr_block        = \"${4:10.0.1.0/24}\"\n    availability_zone = \"${5:ap-northeast-1a}\"\n}".to_string()),
+                insert_text_format: Some(InsertTextFormat::SNIPPET),
+                detail: Some("Subnet resource".to_string()),
+                ..Default::default()
+            },
+            CompletionItem {
+                label: "aws.internet_gateway".to_string(),
+                kind: Some(CompletionItemKind::CLASS),
+                insert_text: Some("aws.internet_gateway {\n    name   = \"${1:igw-name}\"\n    region = aws.Region.${2:ap_northeast_1}\n    vpc    = ${3:vpc_name}\n}".to_string()),
+                insert_text_format: Some(InsertTextFormat::SNIPPET),
+                detail: Some("Internet Gateway resource".to_string()),
+                ..Default::default()
+            },
+            CompletionItem {
+                label: "aws.route_table".to_string(),
+                kind: Some(CompletionItemKind::CLASS),
+                insert_text: Some("aws.route_table {\n    name   = \"${1:rt-name}\"\n    region = aws.Region.${2:ap_northeast_1}\n    vpc    = ${3:vpc_name}\n    routes = [\n        { destination = \"${4:0.0.0.0/0}\", gateway = ${5:igw_name} }\n    ]\n}".to_string()),
+                insert_text_format: Some(InsertTextFormat::SNIPPET),
+                detail: Some("Route Table resource".to_string()),
+                ..Default::default()
+            },
+            CompletionItem {
+                label: "aws.security_group".to_string(),
+                kind: Some(CompletionItemKind::CLASS),
+                insert_text: Some("aws.security_group {\n    name        = \"${1:sg-name}\"\n    region      = aws.Region.${2:ap_northeast_1}\n    vpc         = ${3:vpc_name}\n    description = \"${4:Security group description}\"\n}".to_string()),
+                insert_text_format: Some(InsertTextFormat::SNIPPET),
+                detail: Some("Security Group resource".to_string()),
+                ..Default::default()
+            },
+            CompletionItem {
+                label: "aws.security_group.ingress_rule".to_string(),
+                kind: Some(CompletionItemKind::CLASS),
+                insert_text: Some("aws.security_group.ingress_rule {\n    name           = \"${1:rule-name}\"\n    region         = aws.Region.${2:ap_northeast_1}\n    security_group = ${3:sg_name}\n    protocol       = \"${4:tcp}\"\n    from_port      = ${5:80}\n    to_port        = ${6:80}\n    cidr           = \"${7:0.0.0.0/0}\"\n}".to_string()),
+                insert_text_format: Some(InsertTextFormat::SNIPPET),
+                detail: Some("Security Group Ingress Rule".to_string()),
+                ..Default::default()
+            },
+            CompletionItem {
+                label: "aws.security_group.egress_rule".to_string(),
+                kind: Some(CompletionItemKind::CLASS),
+                insert_text: Some("aws.security_group.egress_rule {\n    name           = \"${1:rule-name}\"\n    region         = aws.Region.${2:ap_northeast_1}\n    security_group = ${3:sg_name}\n    protocol       = \"${4:-1}\"\n    from_port      = ${5:0}\n    to_port        = ${6:0}\n    cidr           = \"${7:0.0.0.0/0}\"\n}".to_string()),
+                insert_text_format: Some(InsertTextFormat::SNIPPET),
+                detail: Some("Security Group Egress Rule".to_string()),
                 ..Default::default()
             },
         ]
     }
 
     fn attribute_completions(&self) -> Vec<CompletionItem> {
-        let schema = s3::bucket_schema();
-        schema
-            .attributes
-            .values()
-            .map(|attr| {
-                let detail = attr.description.clone();
-                let required_marker = if attr.required { " (required)" } else { "" };
+        // Collect attributes from all schemas
+        let schemas = vec![
+            s3::bucket_schema(),
+            ec2::vpc_schema(),
+            ec2::subnet_schema(),
+            ec2::internet_gateway_schema(),
+            ec2::route_table_schema(),
+            ec2::security_group_schema(),
+            ec2::security_group_ingress_rule_schema(),
+            ec2::security_group_egress_rule_schema(),
+        ];
 
-                CompletionItem {
-                    label: attr.name.clone(),
-                    kind: Some(CompletionItemKind::PROPERTY),
-                    detail: detail.map(|d| format!("{}{}", d, required_marker)),
-                    insert_text: Some(format!("{} = ", attr.name)),
-                    ..Default::default()
+        let mut seen = std::collections::HashSet::new();
+        let mut completions = Vec::new();
+
+        for schema in schemas {
+            for attr in schema.attributes.values() {
+                if seen.insert(attr.name.clone()) {
+                    let detail = attr.description.clone();
+                    let required_marker = if attr.required { " (required)" } else { "" };
+
+                    completions.push(CompletionItem {
+                        label: attr.name.clone(),
+                        kind: Some(CompletionItemKind::PROPERTY),
+                        detail: detail.map(|d| format!("{}{}", d, required_marker)),
+                        insert_text: Some(format!("{} = ", attr.name)),
+                        ..Default::default()
+                    });
                 }
-            })
-            .collect()
+            }
+        }
+
+        completions
     }
 
     fn value_completions(&self) -> Vec<CompletionItem> {
