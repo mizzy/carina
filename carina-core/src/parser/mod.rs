@@ -98,8 +98,7 @@ pub fn parse(input: &str) -> Result<ParsedFile, ParseError> {
                                 providers.push(provider);
                             }
                             Rule::let_binding => {
-                                let (name, value, maybe_resource) =
-                                    parse_let_binding(stmt, &ctx)?;
+                                let (name, value, maybe_resource) = parse_let_binding(stmt, &ctx)?;
                                 ctx.set_variable(name.clone(), value);
                                 if let Some(resource) = maybe_resource {
                                     ctx.set_resource_binding(name.clone(), resource.clone());
@@ -246,10 +245,7 @@ fn parse_anonymous_resource(
 
     // Add provider information to attributes
     attributes.insert("_provider".to_string(), Value::String(provider.to_string()));
-    attributes.insert(
-        "_type".to_string(),
-        Value::String(namespaced_type.clone()),
-    );
+    attributes.insert("_type".to_string(), Value::String(namespaced_type.clone()));
 
     Ok(Resource {
         id: ResourceId::new(resource_type, resource_name),
@@ -302,10 +298,7 @@ fn parse_resource_expr(
 
     // Add provider information to attributes
     attributes.insert("_provider".to_string(), Value::String(provider.to_string()));
-    attributes.insert(
-        "_type".to_string(),
-        Value::String(namespaced_type.clone()),
-    );
+    attributes.insert("_type".to_string(), Value::String(namespaced_type.clone()));
     // Save binding name (for reference)
     attributes.insert(
         "_binding".to_string(),

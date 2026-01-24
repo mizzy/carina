@@ -120,7 +120,10 @@ mod tests {
             .with_attribute("region", Value::String("ap-northeast-1".to_string()));
 
         let mut attrs = HashMap::new();
-        attrs.insert("region".to_string(), Value::String("ap-northeast-1".to_string()));
+        attrs.insert(
+            "region".to_string(),
+            Value::String("ap-northeast-1".to_string()),
+        );
         let current = State::existing(ResourceId::new("bucket", "test"), attrs);
 
         let result = diff(&desired, &current);
@@ -133,12 +136,17 @@ mod tests {
             .with_attribute("region", Value::String("us-east-1".to_string()));
 
         let mut attrs = HashMap::new();
-        attrs.insert("region".to_string(), Value::String("ap-northeast-1".to_string()));
+        attrs.insert(
+            "region".to_string(),
+            Value::String("ap-northeast-1".to_string()),
+        );
         let current = State::existing(ResourceId::new("bucket", "test"), attrs);
 
         let result = diff(&desired, &current);
         match result {
-            Diff::Update { changed_attributes, .. } => {
+            Diff::Update {
+                changed_attributes, ..
+            } => {
                 assert!(changed_attributes.contains(&"region".to_string()));
             }
             _ => panic!("Expected Update"),

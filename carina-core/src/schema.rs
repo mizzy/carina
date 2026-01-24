@@ -40,7 +40,7 @@ impl AttributeType {
 
             (AttributeType::Enum(variants), Value::String(s)) => {
                 // Extract variant from "Type.variant" format
-                let variant = s.split('.').last().unwrap_or(s);
+                let variant = s.split('.').next_back().unwrap_or(s);
                 if variants.iter().any(|v| v == variant || s == v) {
                     Ok(())
                 } else {
@@ -102,7 +102,10 @@ pub enum TypeError {
     TypeMismatch { expected: String, got: String },
 
     #[error("Invalid enum variant '{value}', expected one of: {}", expected.join(", "))]
-    InvalidEnumVariant { value: String, expected: Vec<String> },
+    InvalidEnumVariant {
+        value: String,
+        expected: Vec<String>,
+    },
 
     #[error("Validation failed: {message}")]
     ValidationFailed { message: String },
@@ -210,10 +213,10 @@ impl ResourceSchema {
 
         // Type check each attribute
         for (name, value) in attributes {
-            if let Some(schema) = self.attributes.get(name) {
-                if let Err(e) = schema.attr_type.validate(value) {
-                    errors.push(e);
-                }
+            if let Some(schema) = self.attributes.get(name)
+                && let Err(e) = schema.attr_type.validate(value)
+            {
+                errors.push(e);
             }
             // Unknown attributes are allowed (for flexibility)
         }
@@ -329,12 +332,14 @@ mod tests {
     #[test]
     fn validate_aws_region() {
         let t = types::aws_region();
-        assert!(t
-            .validate(&Value::String("Region.ap_northeast_1".to_string()))
-            .is_ok());
-        assert!(t
-            .validate(&Value::String("Region.invalid".to_string()))
-            .is_err());
+        assert!(
+            t.validate(&Value::String("Region.ap_northeast_1".to_string()))
+                .is_ok()
+        );
+        assert!(
+            t.validate(&Value::String("Region.invalid".to_string()))
+                .is_err()
+        );
     }
 
     #[test]
