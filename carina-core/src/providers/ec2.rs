@@ -203,7 +203,7 @@ pub fn security_group_schema() -> ResourceSchema {
 
 /// Returns the schema for Security Group Ingress Rule
 pub fn security_group_ingress_rule_schema() -> ResourceSchema {
-    ResourceSchema::new("security_group_ingress_rule")
+    ResourceSchema::new("security_group.ingress_rule")
         .with_description("An inbound rule for an AWS VPC Security Group")
         .attribute(
             AttributeSchema::new("name", AttributeType::String)
@@ -242,7 +242,7 @@ pub fn security_group_ingress_rule_schema() -> ResourceSchema {
 
 /// Returns the schema for Security Group Egress Rule
 pub fn security_group_egress_rule_schema() -> ResourceSchema {
-    ResourceSchema::new("security_group_egress_rule")
+    ResourceSchema::new("security_group.egress_rule")
         .with_description("An outbound rule for an AWS VPC Security Group")
         .attribute(
             AttributeSchema::new("name", AttributeType::String)

@@ -95,7 +95,7 @@ pub struct SecurityGroupIngressRuleType;
 
 impl ResourceType for SecurityGroupIngressRuleType {
     fn name(&self) -> &'static str {
-        "security_group_ingress_rule"
+        "security_group.ingress_rule"
     }
 
     fn schema(&self) -> ResourceSchema {
@@ -108,7 +108,7 @@ pub struct SecurityGroupEgressRuleType;
 
 impl ResourceType for SecurityGroupEgressRuleType {
     fn name(&self) -> &'static str {
-        "security_group_egress_rule"
+        "security_group.egress_rule"
     }
 
     fn schema(&self) -> ResourceSchema {
@@ -1533,9 +1533,9 @@ impl AwsProvider {
         is_ingress: bool,
     ) -> ProviderResult<State> {
         let resource_type = if is_ingress {
-            "security_group_ingress_rule"
+            "security_group.ingress_rule"
         } else {
-            "security_group_egress_rule"
+            "security_group.egress_rule"
         };
         let id = ResourceId::new(resource_type, name);
 
@@ -1818,10 +1818,10 @@ impl Provider for AwsProvider {
                 "internet_gateway" => self.read_ec2_internet_gateway(&id.name).await,
                 "route_table" => self.read_ec2_route_table(&id.name).await,
                 "security_group" => self.read_ec2_security_group(&id.name).await,
-                "security_group_ingress_rule" => {
+                "security_group.ingress_rule" => {
                     self.read_ec2_security_group_rule(&id.name, true).await
                 }
-                "security_group_egress_rule" => {
+                "security_group.egress_rule" => {
                     self.read_ec2_security_group_rule(&id.name, false).await
                 }
                 _ => Err(ProviderError::new(format!(
@@ -1843,10 +1843,10 @@ impl Provider for AwsProvider {
                 "internet_gateway" => self.create_ec2_internet_gateway(resource).await,
                 "route_table" => self.create_ec2_route_table(resource).await,
                 "security_group" => self.create_ec2_security_group(resource).await,
-                "security_group_ingress_rule" => {
+                "security_group.ingress_rule" => {
                     self.create_ec2_security_group_rule(resource, true).await
                 }
-                "security_group_egress_rule" => {
+                "security_group.egress_rule" => {
                     self.create_ec2_security_group_rule(resource, false).await
                 }
                 _ => Err(ProviderError::new(format!(
@@ -1874,10 +1874,10 @@ impl Provider for AwsProvider {
                 "internet_gateway" => self.update_ec2_internet_gateway(id, to).await,
                 "route_table" => self.update_ec2_route_table(id, to).await,
                 "security_group" => self.update_ec2_security_group(id, to).await,
-                "security_group_ingress_rule" => {
+                "security_group.ingress_rule" => {
                     self.update_ec2_security_group_rule(id, to, true).await
                 }
-                "security_group_egress_rule" => {
+                "security_group.egress_rule" => {
                     self.update_ec2_security_group_rule(id, to, false).await
                 }
                 _ => Err(ProviderError::new(format!(
@@ -1899,10 +1899,10 @@ impl Provider for AwsProvider {
                 "internet_gateway" => self.delete_ec2_internet_gateway(id).await,
                 "route_table" => self.delete_ec2_route_table(id).await,
                 "security_group" => self.delete_ec2_security_group(id).await,
-                "security_group_ingress_rule" => {
+                "security_group.ingress_rule" => {
                     self.delete_ec2_security_group_rule(id, true).await
                 }
-                "security_group_egress_rule" => {
+                "security_group.egress_rule" => {
                     self.delete_ec2_security_group_rule(id, false).await
                 }
                 _ => Err(ProviderError::new(format!(

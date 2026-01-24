@@ -12,8 +12,8 @@ This document describes all supported resources and their attributes.
   - [aws.internet_gateway](#awsinternet_gateway)
   - [aws.route_table](#awsroute_table)
   - [aws.security_group](#awssecurity_group)
-  - [aws.security_group_ingress_rule](#awssecurity_group_ingress_rule)
-  - [aws.security_group_egress_rule](#awssecurity_group_egress_rule)
+  - [aws.security_group.ingress_rule](#awssecurity_groupingress_rule)
+  - [aws.security_group.egress_rule](#awssecurity_groupegress_rule)
 
 ---
 
@@ -216,11 +216,11 @@ let web_sg = aws.security_group {
 
 #### Notes
 
-- Use `aws.security_group_ingress_rule` and `aws.security_group_egress_rule` to define rules
+- Use `aws.security_group.ingress_rule` and `aws.security_group.egress_rule` to define rules
 
 ---
 
-### aws.security_group_ingress_rule
+### aws.security_group.ingress_rule
 
 An inbound rule for an AWS VPC Security Group.
 
@@ -239,7 +239,7 @@ An inbound rule for an AWS VPC Security Group.
 #### Example
 
 ```crn
-aws.security_group_ingress_rule {
+aws.security_group.ingress_rule {
     name           = "web-sg-http"
     region         = aws.Region.ap_northeast_1
     security_group = web_sg.name
@@ -249,7 +249,7 @@ aws.security_group_ingress_rule {
     cidr           = "0.0.0.0/0"
 }
 
-aws.security_group_ingress_rule {
+aws.security_group.ingress_rule {
     name           = "web-sg-https"
     region         = aws.Region.ap_northeast_1
     security_group = web_sg.name
@@ -262,7 +262,7 @@ aws.security_group_ingress_rule {
 
 ---
 
-### aws.security_group_egress_rule
+### aws.security_group.egress_rule
 
 An outbound rule for an AWS VPC Security Group.
 
@@ -281,7 +281,7 @@ An outbound rule for an AWS VPC Security Group.
 #### Example
 
 ```crn
-aws.security_group_egress_rule {
+aws.security_group.egress_rule {
     name           = "web-sg-all-outbound"
     region         = aws.Region.ap_northeast_1
     security_group = web_sg.name
@@ -383,7 +383,7 @@ let web_sg = aws.security_group {
 }
 
 // Web Security Group Rules
-aws.security_group_ingress_rule {
+aws.security_group.ingress_rule {
     name           = "web-sg-http"
     region         = aws.Region.ap_northeast_1
     security_group = web_sg.name
@@ -393,7 +393,7 @@ aws.security_group_ingress_rule {
     cidr           = "0.0.0.0/0"
 }
 
-aws.security_group_ingress_rule {
+aws.security_group.ingress_rule {
     name           = "web-sg-https"
     region         = aws.Region.ap_northeast_1
     security_group = web_sg.name
@@ -403,7 +403,7 @@ aws.security_group_ingress_rule {
     cidr           = "0.0.0.0/0"
 }
 
-aws.security_group_egress_rule {
+aws.security_group.egress_rule {
     name           = "web-sg-all-outbound"
     region         = aws.Region.ap_northeast_1
     security_group = web_sg.name
@@ -421,7 +421,7 @@ let db_sg = aws.security_group {
     description = "Database security group"
 }
 
-aws.security_group_ingress_rule {
+aws.security_group.ingress_rule {
     name           = "db-sg-mysql"
     region         = aws.Region.ap_northeast_1
     security_group = db_sg.name
@@ -431,7 +431,7 @@ aws.security_group_ingress_rule {
     cidr           = "10.0.0.0/16"
 }
 
-aws.security_group_egress_rule {
+aws.security_group.egress_rule {
     name           = "db-sg-all-outbound"
     region         = aws.Region.ap_northeast_1
     security_group = db_sg.name

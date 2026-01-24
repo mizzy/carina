@@ -60,17 +60,17 @@ impl HoverProvider {
             return self.schema_hover("aws.route_table", &ec2::route_table_schema());
         }
 
-        if word == "aws.security_group_ingress_rule" || word.contains("security_group_ingress_rule")
+        if word == "aws.security_group.ingress_rule" || word.contains("security_group.ingress_rule")
         {
             return self.schema_hover(
-                "aws.security_group_ingress_rule",
+                "aws.security_group.ingress_rule",
                 &ec2::security_group_ingress_rule_schema(),
             );
         }
 
-        if word == "aws.security_group_egress_rule" || word.contains("security_group_egress_rule") {
+        if word == "aws.security_group.egress_rule" || word.contains("security_group.egress_rule") {
             return self.schema_hover(
-                "aws.security_group_egress_rule",
+                "aws.security_group.egress_rule",
                 &ec2::security_group_egress_rule_schema(),
             );
         }
