@@ -35,7 +35,8 @@ impl AttributeType {
     /// Check if a value conforms to this type
     pub fn validate(&self, value: &Value) -> Result<(), TypeError> {
         match (self, value) {
-            (AttributeType::String, Value::String(_)) => Ok(()),
+            // ResourceRef values resolve to strings at runtime, so they're valid for String types
+            (AttributeType::String, Value::String(_) | Value::ResourceRef(_, _)) => Ok(()),
             (AttributeType::Int, Value::Int(_)) => Ok(()),
             (AttributeType::Bool, Value::Bool(_)) => Ok(()),
 

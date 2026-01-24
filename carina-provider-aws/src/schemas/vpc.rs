@@ -1,7 +1,7 @@
-//! EC2 resource schema definitions
+//! VPC resource schema definitions
 
-use crate::resource::Value;
-use crate::schema::{AttributeSchema, AttributeType, ResourceSchema, types};
+use carina_core::resource::Value;
+use carina_core::schema::{AttributeSchema, AttributeType, ResourceSchema, types};
 
 /// CIDR block type (with validation)
 pub fn cidr_block() -> AttributeType {
@@ -63,7 +63,78 @@ pub fn protocol() -> AttributeType {
         "tcp".to_string(),
         "udp".to_string(),
         "icmp".to_string(),
-        "-1".to_string(), // All traffic
+        "all".to_string(), // All traffic (-1)
+        // DSL format variants
+        "Protocol.tcp".to_string(),
+        "Protocol.udp".to_string(),
+        "Protocol.icmp".to_string(),
+        "Protocol.all".to_string(),
+        "aws.Protocol.tcp".to_string(),
+        "aws.Protocol.udp".to_string(),
+        "aws.Protocol.icmp".to_string(),
+        "aws.Protocol.all".to_string(),
+    ])
+}
+
+/// Availability zone enum type
+pub fn availability_zone() -> AttributeType {
+    AttributeType::Enum(vec![
+        // ap-northeast-1 (Tokyo)
+        "ap_northeast_1a".to_string(),
+        "ap_northeast_1c".to_string(),
+        "ap_northeast_1d".to_string(),
+        // ap-northeast-2 (Seoul)
+        "ap_northeast_2a".to_string(),
+        "ap_northeast_2b".to_string(),
+        "ap_northeast_2c".to_string(),
+        "ap_northeast_2d".to_string(),
+        // ap-northeast-3 (Osaka)
+        "ap_northeast_3a".to_string(),
+        "ap_northeast_3b".to_string(),
+        "ap_northeast_3c".to_string(),
+        // ap-southeast-1 (Singapore)
+        "ap_southeast_1a".to_string(),
+        "ap_southeast_1b".to_string(),
+        "ap_southeast_1c".to_string(),
+        // ap-southeast-2 (Sydney)
+        "ap_southeast_2a".to_string(),
+        "ap_southeast_2b".to_string(),
+        "ap_southeast_2c".to_string(),
+        // ap-south-1 (Mumbai)
+        "ap_south_1a".to_string(),
+        "ap_south_1b".to_string(),
+        "ap_south_1c".to_string(),
+        // us-east-1 (N. Virginia)
+        "us_east_1a".to_string(),
+        "us_east_1b".to_string(),
+        "us_east_1c".to_string(),
+        "us_east_1d".to_string(),
+        "us_east_1e".to_string(),
+        "us_east_1f".to_string(),
+        // us-east-2 (Ohio)
+        "us_east_2a".to_string(),
+        "us_east_2b".to_string(),
+        "us_east_2c".to_string(),
+        // us-west-1 (N. California)
+        "us_west_1a".to_string(),
+        "us_west_1b".to_string(),
+        // us-west-2 (Oregon)
+        "us_west_2a".to_string(),
+        "us_west_2b".to_string(),
+        "us_west_2c".to_string(),
+        "us_west_2d".to_string(),
+        // eu-west-1 (Ireland)
+        "eu_west_1a".to_string(),
+        "eu_west_1b".to_string(),
+        "eu_west_1c".to_string(),
+        // eu-west-2 (London)
+        "eu_west_2a".to_string(),
+        "eu_west_2b".to_string(),
+        "eu_west_2c".to_string(),
+        // eu-central-1 (Frankfurt)
+        "eu_central_1a".to_string(),
+        "eu_central_1b".to_string(),
+        "eu_central_1c".to_string(),
     ])
 }
 
@@ -81,9 +152,9 @@ pub fn vpc_schema() -> ResourceSchema {
                 .with_description("VPC name (Name tag)"),
         )
         .attribute(
-            AttributeSchema::new("region", types::aws_region())
-                .required()
-                .with_description("The AWS region for the VPC"),
+            AttributeSchema::new("region", types::aws_region()).with_description(
+                "The AWS region for the VPC (inherited from provider if not specified)",
+            ),
         )
         .attribute(
             AttributeSchema::new("cidr_block", cidr_block())
@@ -114,9 +185,9 @@ pub fn subnet_schema() -> ResourceSchema {
                 .with_description("Subnet name (Name tag)"),
         )
         .attribute(
-            AttributeSchema::new("region", types::aws_region())
-                .required()
-                .with_description("The AWS region for the subnet"),
+            AttributeSchema::new("region", types::aws_region()).with_description(
+                "The AWS region for the subnet (inherited from provider if not specified)",
+            ),
         )
         .attribute(
             AttributeSchema::new("vpc_id", AttributeType::String)
@@ -129,7 +200,7 @@ pub fn subnet_schema() -> ResourceSchema {
                 .with_description("The IPv4 CIDR block for the subnet"),
         )
         .attribute(
-            AttributeSchema::new("availability_zone", AttributeType::String)
+            AttributeSchema::new("availability_zone", availability_zone())
                 .with_description("The availability zone for the subnet"),
         )
 }
@@ -149,18 +220,12 @@ pub fn internet_gateway_schema() -> ResourceSchema {
         )
         .attribute(
             AttributeSchema::new("region", types::aws_region())
-                .required()
-                .with_description("The AWS region for the Internet Gateway"),
+                .with_description("The AWS region for the Internet Gateway (inherited from provider if not specified)"),
         )
         .attribute(
             AttributeSchema::new("vpc_id", AttributeType::String)
                 .with_description("VPC ID to attach the Internet Gateway to"),
         )
-}
-
-/// Route schema for route tables
-fn route_schema() -> AttributeType {
-    AttributeType::Map(Box::new(AttributeType::String))
 }
 
 /// Returns the schema for Route Table
@@ -177,18 +242,47 @@ pub fn route_table_schema() -> ResourceSchema {
                 .with_description("Route Table name (Name tag)"),
         )
         .attribute(
-            AttributeSchema::new("region", types::aws_region())
-                .required()
-                .with_description("The AWS region for the Route Table"),
+            AttributeSchema::new("region", types::aws_region()).with_description(
+                "The AWS region for the Route Table (inherited from provider if not specified)",
+            ),
         )
         .attribute(
             AttributeSchema::new("vpc_id", AttributeType::String)
                 .required()
                 .with_description("VPC ID for the Route Table"),
         )
+}
+
+/// Returns the schema for Route
+pub fn route_schema() -> ResourceSchema {
+    ResourceSchema::new("route")
+        .with_description("A route in an AWS VPC Route Table")
         .attribute(
-            AttributeSchema::new("routes", AttributeType::List(Box::new(route_schema())))
-                .with_description("List of routes"),
+            AttributeSchema::new("name", AttributeType::String)
+                .required()
+                .with_description("Route name (for identification)"),
+        )
+        .attribute(
+            AttributeSchema::new("region", types::aws_region())
+                .with_description("The AWS region (inherited from provider if not specified)"),
+        )
+        .attribute(
+            AttributeSchema::new("route_table_id", AttributeType::String)
+                .required()
+                .with_description("Route Table ID"),
+        )
+        .attribute(
+            AttributeSchema::new("destination_cidr_block", cidr_block())
+                .required()
+                .with_description("Destination CIDR block"),
+        )
+        .attribute(
+            AttributeSchema::new("gateway_id", AttributeType::String)
+                .with_description("Internet Gateway ID (for internet-bound traffic)"),
+        )
+        .attribute(
+            AttributeSchema::new("nat_gateway_id", AttributeType::String)
+                .with_description("NAT Gateway ID"),
         )
 }
 
@@ -206,9 +300,9 @@ pub fn security_group_schema() -> ResourceSchema {
                 .with_description("Security Group name (Name tag)"),
         )
         .attribute(
-            AttributeSchema::new("region", types::aws_region())
-                .required()
-                .with_description("The AWS region for the Security Group"),
+            AttributeSchema::new("region", types::aws_region()).with_description(
+                "The AWS region for the Security Group (inherited from provider if not specified)",
+            ),
         )
         .attribute(
             AttributeSchema::new("vpc_id", AttributeType::String)
@@ -236,8 +330,7 @@ pub fn security_group_ingress_rule_schema() -> ResourceSchema {
         )
         .attribute(
             AttributeSchema::new("region", types::aws_region())
-                .required()
-                .with_description("The AWS region"),
+                .with_description("The AWS region (inherited from provider if not specified)"),
         )
         .attribute(
             AttributeSchema::new("security_group_id", AttributeType::String)
@@ -279,8 +372,7 @@ pub fn security_group_egress_rule_schema() -> ResourceSchema {
         )
         .attribute(
             AttributeSchema::new("region", types::aws_region())
-                .required()
-                .with_description("The AWS region"),
+                .with_description("The AWS region (inherited from provider if not specified)"),
         )
         .attribute(
             AttributeSchema::new("security_group_id", AttributeType::String)
@@ -307,13 +399,14 @@ pub fn security_group_egress_rule_schema() -> ResourceSchema {
         )
 }
 
-/// Returns all EC2-related schemas
+/// Returns all VPC-related schemas
 pub fn schemas() -> Vec<ResourceSchema> {
     vec![
         vpc_schema(),
         subnet_schema(),
         internet_gateway_schema(),
         route_table_schema(),
+        route_schema(),
         security_group_schema(),
         security_group_ingress_rule_schema(),
         security_group_egress_rule_schema(),
@@ -370,11 +463,11 @@ mod tests {
     }
 
     #[test]
-    fn vpc_missing_required() {
+    fn vpc_missing_required_cidr_block() {
         let schema = vpc_schema();
         let mut attrs = HashMap::new();
         attrs.insert("name".to_string(), Value::String("my-vpc".to_string()));
-        // missing region and cidr_block
+        // missing cidr_block (region is optional, inherited from provider)
 
         let result = schema.validate(&attrs);
         assert!(result.is_err());
@@ -399,7 +492,7 @@ mod tests {
         );
         attrs.insert(
             "availability_zone".to_string(),
-            Value::String("ap-northeast-1a".to_string()),
+            Value::String("aws.AvailabilityZone.ap_northeast_1a".to_string()),
         );
 
         assert!(schema.validate(&attrs).is_ok());

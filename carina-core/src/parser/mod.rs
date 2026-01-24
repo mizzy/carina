@@ -213,14 +213,14 @@ fn parse_anonymous_resource(
 
     let namespaced_type = inner.next().unwrap().as_str().to_string();
 
-    // Extract resource type from namespace (aws.s3.bucket -> s3_bucket)
+    // Extract resource type from namespace (aws.s3.bucket -> s3.bucket)
     let parts: Vec<&str> = namespaced_type.split('.').collect();
     if parts.len() < 2 {
         return Err(ParseError::InvalidResourceType(namespaced_type));
     }
 
     let provider = parts[0];
-    let resource_type = parts[1..].join("_");
+    let resource_type = parts[1..].join(".");
 
     let attributes = parse_block_contents(inner, ctx)?;
 
@@ -317,7 +317,7 @@ fn parse_resource_expr(
 
     let namespaced_type = inner.next().unwrap().as_str().to_string();
 
-    // Extract resource type from namespace (aws.s3.bucket -> s3_bucket)
+    // Extract resource type from namespace (aws.s3.bucket -> s3.bucket)
     let parts: Vec<&str> = namespaced_type.split('.').collect();
     if parts.len() < 2 {
         return Err(ParseError::InvalidResourceType(namespaced_type));
@@ -325,7 +325,7 @@ fn parse_resource_expr(
 
     // First part is provider name, the rest is resource type
     let provider = parts[0];
-    let resource_type = parts[1..].join("_");
+    let resource_type = parts[1..].join(".");
 
     let mut attributes = parse_block_contents(inner, ctx)?;
 
@@ -435,14 +435,8 @@ fn parse_primary_value(
             let parts: Vec<&str> = full_str.split('.').collect();
 
             if parts.len() == 2 {
-                // Two-part identifier: could be resource reference or undefined variable
-                if ctx.is_resource_binding(parts[0]) {
-                    // This is a resource reference: resource.attribute
-                    Ok(Value::ResourceRef(
-                        parts[0].to_string(),
-                        parts[1].to_string(),
-                    ))
-                } else if ctx.get_variable(parts[0]).is_some() {
+                // Two-part identifier: could be resource reference or variable access
+                if ctx.get_variable(parts[0]).is_some() && !ctx.is_resource_binding(parts[0]) {
                     // Variable exists but trying to access attribute on non-resource
                     Err(ParseError::InvalidExpression {
                         line: 0,
@@ -452,8 +446,11 @@ fn parse_primary_value(
                         ),
                     })
                 } else {
-                    // Unknown identifier
-                    Err(ParseError::UndefinedVariable(full_str.to_string()))
+                    // Treat as resource reference (will be validated in resolve phase)
+                    Ok(Value::ResourceRef(
+                        parts[0].to_string(),
+                        parts[1].to_string(),
+                    ))
                 }
             } else {
                 // 3+ part identifier is a namespaced type (aws.Region.ap_northeast_1)
@@ -481,20 +478,11 @@ fn parse_primary_value(
                 // Member access: resource.attribute
                 let attr_name = second_part.as_str();
 
-                // Check if it's a resource binding
-                if ctx.is_resource_binding(first_ident) {
-                    // Return a ResourceRef that will be resolved later
-                    Ok(Value::ResourceRef(
-                        first_ident.to_string(),
-                        attr_name.to_string(),
-                    ))
-                } else {
-                    // Not a resource binding, treat as undefined
-                    Err(ParseError::UndefinedVariable(format!(
-                        "{}.{}",
-                        first_ident, attr_name
-                    )))
-                }
+                // Return a ResourceRef that will be resolved/validated later
+                Ok(Value::ResourceRef(
+                    first_ident.to_string(),
+                    attr_name.to_string(),
+                ))
             } else {
                 // Simple variable reference
                 match ctx.get_variable(first_ident) {
@@ -627,7 +615,7 @@ mod tests {
         assert_eq!(result.resources.len(), 1);
 
         let resource = &result.resources[0];
-        assert_eq!(resource.id.resource_type, "s3_bucket");
+        assert_eq!(resource.id.resource_type, "s3.bucket");
         assert_eq!(resource.id.name, "my-bucket"); // name attribute value becomes the resource ID
         assert_eq!(
             resource.attributes.get("name"),
@@ -750,7 +738,7 @@ mod tests {
 
         let result = parse(input).unwrap();
         assert_eq!(result.resources.len(), 1);
-        assert_eq!(result.resources[0].id.resource_type, "storage_bucket");
+        assert_eq!(result.resources[0].id.resource_type, "storage.bucket");
         assert_eq!(
             result.resources[0].attributes.get("_provider"),
             Some(&Value::String("gcp".to_string()))
@@ -770,7 +758,7 @@ mod tests {
         assert_eq!(result.resources.len(), 1);
 
         let resource = &result.resources[0];
-        assert_eq!(resource.id.resource_type, "s3_bucket");
+        assert_eq!(resource.id.resource_type, "s3.bucket");
         assert_eq!(resource.id.name, "my-anonymous-bucket");
     }
 
@@ -873,7 +861,8 @@ mod tests {
             }
         "#;
 
-        let result = parse(input);
+        // Parsing succeeds, but resolution fails
+        let result = parse_and_resolve(input);
         assert!(result.is_err());
         match result {
             Err(ParseError::UndefinedVariable(name)) => {

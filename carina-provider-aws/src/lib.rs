@@ -2,6 +2,8 @@
 //!
 //! AWS Provider implementation
 
+pub mod schemas;
+
 use std::collections::HashMap;
 
 use aws_config::Region;
@@ -17,7 +19,7 @@ pub struct S3BucketType;
 
 impl ResourceType for S3BucketType {
     fn name(&self) -> &'static str {
-        "s3_bucket"
+        "s3.bucket"
     }
 
     fn schema(&self) -> ResourceSchema {
@@ -70,6 +72,19 @@ pub struct RouteTableType;
 impl ResourceType for RouteTableType {
     fn name(&self) -> &'static str {
         "route_table"
+    }
+
+    fn schema(&self) -> ResourceSchema {
+        ResourceSchema::default()
+    }
+}
+
+/// Route resource type
+pub struct RouteType;
+
+impl ResourceType for RouteType {
+    fn name(&self) -> &'static str {
+        "route"
     }
 
     fn schema(&self) -> ResourceSchema {
@@ -149,7 +164,7 @@ impl AwsProvider {
 
     /// Read an S3 bucket
     async fn read_s3_bucket(&self, name: &str) -> ProviderResult<State> {
-        let id = ResourceId::new("s3_bucket", name);
+        let id = ResourceId::new("s3.bucket", name);
 
         match self.s3_client.head_bucket().bucket(name).send().await {
             Ok(_) => {
@@ -239,7 +254,7 @@ impl AwsProvider {
         let region = match resource.attributes.get("region") {
             Some(Value::String(s)) => {
                 // Convert from aws.Region.ap_northeast_1 format to ap-northeast-1 format
-                convert_region_value(s)
+                convert_enum_value(s)
             }
             _ => self.region.clone(),
         };
@@ -713,10 +728,9 @@ impl AwsProvider {
             }
 
             if let Some(az) = subnet.availability_zone() {
-                attributes.insert(
-                    "availability_zone".to_string(),
-                    Value::String(az.to_string()),
-                );
+                // Return availability_zone in DSL format
+                let az_dsl = format!("aws.AvailabilityZone.{}", az.replace('-', "_"));
+                attributes.insert("availability_zone".to_string(), Value::String(az_dsl));
             }
 
             // Store subnet ID
@@ -771,7 +785,7 @@ impl AwsProvider {
             .cidr_block(&cidr_block);
 
         if let Some(Value::String(az)) = resource.attributes.get("availability_zone") {
-            req = req.availability_zone(az);
+            req = req.availability_zone(convert_enum_value(az));
         }
 
         let result = req.send().await.map_err(|e| {
@@ -1210,6 +1224,172 @@ impl AwsProvider {
         Ok(())
     }
 
+    // ========== EC2 Route Operations ==========
+
+    /// Read an EC2 Route (routes are identified by route_table_id + destination)
+    async fn read_ec2_route(&self, name: &str) -> ProviderResult<State> {
+        // Routes don't have a "name" in AWS - we use the name for identification
+        // The actual route is identified by route_table_id + destination_cidr_block
+        // For read, we return not_found since we can't look up by name alone
+        let id = ResourceId::new("route", name);
+        Ok(State::not_found(id))
+    }
+
+    /// Read an EC2 Route by route_table_id and destination_cidr_block
+    pub async fn read_ec2_route_by_key(
+        &self,
+        name: &str,
+        route_table_id: &str,
+        destination_cidr_block: &str,
+    ) -> ProviderResult<State> {
+        let id = ResourceId::new("route", name);
+
+        // Describe the route table to get its routes
+        let result = self
+            .ec2_client
+            .describe_route_tables()
+            .route_table_ids(route_table_id)
+            .send()
+            .await
+            .map_err(|e| {
+                ProviderError::new(format!("Failed to describe route table: {:?}", e))
+                    .for_resource(id.clone())
+            })?;
+
+        if let Some(rt) = result.route_tables().first() {
+            // Find the route matching destination_cidr_block
+            for route in rt.routes() {
+                if route.destination_cidr_block() == Some(destination_cidr_block) {
+                    let mut attributes = HashMap::new();
+                    attributes.insert("name".to_string(), Value::String(name.to_string()));
+                    attributes.insert(
+                        "route_table_id".to_string(),
+                        Value::String(route_table_id.to_string()),
+                    );
+                    attributes.insert(
+                        "destination_cidr_block".to_string(),
+                        Value::String(destination_cidr_block.to_string()),
+                    );
+
+                    let region_dsl = format!("aws.Region.{}", self.region.replace('-', "_"));
+                    attributes.insert("region".to_string(), Value::String(region_dsl));
+
+                    if let Some(gw_id) = route.gateway_id() {
+                        attributes
+                            .insert("gateway_id".to_string(), Value::String(gw_id.to_string()));
+                    }
+                    if let Some(nat_gw_id) = route.nat_gateway_id() {
+                        attributes.insert(
+                            "nat_gateway_id".to_string(),
+                            Value::String(nat_gw_id.to_string()),
+                        );
+                    }
+
+                    return Ok(State::existing(id, attributes));
+                }
+            }
+        }
+
+        Ok(State::not_found(id))
+    }
+
+    /// Create an EC2 Route
+    async fn create_ec2_route(&self, resource: Resource) -> ProviderResult<State> {
+        let name = match resource.attributes.get("name") {
+            Some(Value::String(s)) => s.clone(),
+            _ => {
+                return Err(
+                    ProviderError::new("Route name is required").for_resource(resource.id.clone())
+                );
+            }
+        };
+
+        let route_table_id = match resource.attributes.get("route_table_id") {
+            Some(Value::String(s)) => s.clone(),
+            _ => {
+                return Err(ProviderError::new("route_table_id is required")
+                    .for_resource(resource.id.clone()));
+            }
+        };
+
+        let destination_cidr = match resource.attributes.get("destination_cidr_block") {
+            Some(Value::String(s)) => s.clone(),
+            _ => {
+                return Err(ProviderError::new("destination_cidr_block is required")
+                    .for_resource(resource.id.clone()));
+            }
+        };
+
+        let mut req = self
+            .ec2_client
+            .create_route()
+            .route_table_id(&route_table_id)
+            .destination_cidr_block(&destination_cidr);
+
+        // Add gateway_id if specified
+        if let Some(Value::String(gw_id)) = resource.attributes.get("gateway_id") {
+            req = req.gateway_id(gw_id);
+        }
+
+        // Add nat_gateway_id if specified
+        if let Some(Value::String(nat_gw_id)) = resource.attributes.get("nat_gateway_id") {
+            req = req.nat_gateway_id(nat_gw_id);
+        }
+
+        req.send().await.map_err(|e| {
+            ProviderError::new(format!("Failed to create route: {:?}", e))
+                .for_resource(resource.id.clone())
+        })?;
+
+        // Return state with the route attributes
+        let mut attributes = resource.attributes.clone();
+        attributes.insert("name".to_string(), Value::String(name));
+
+        Ok(State::existing(resource.id, attributes))
+    }
+
+    /// Update an EC2 Route (replace the route)
+    async fn update_ec2_route(&self, id: ResourceId, to: Resource) -> ProviderResult<State> {
+        let route_table_id = match to.attributes.get("route_table_id") {
+            Some(Value::String(s)) => s.clone(),
+            _ => {
+                return Err(
+                    ProviderError::new("route_table_id is required").for_resource(id.clone())
+                );
+            }
+        };
+
+        let destination_cidr = match to.attributes.get("destination_cidr_block") {
+            Some(Value::String(s)) => s.clone(),
+            _ => {
+                return Err(ProviderError::new("destination_cidr_block is required")
+                    .for_resource(id.clone()));
+            }
+        };
+
+        let mut req = self
+            .ec2_client
+            .replace_route()
+            .route_table_id(&route_table_id)
+            .destination_cidr_block(&destination_cidr);
+
+        // Add gateway_id if specified
+        if let Some(Value::String(gw_id)) = to.attributes.get("gateway_id") {
+            req = req.gateway_id(gw_id);
+        }
+
+        // Add nat_gateway_id if specified
+        if let Some(Value::String(nat_gw_id)) = to.attributes.get("nat_gateway_id") {
+            req = req.nat_gateway_id(nat_gw_id);
+        }
+
+        req.send().await.map_err(|e| {
+            ProviderError::new(format!("Failed to update route: {:?}", e)).for_resource(id.clone())
+        })?;
+
+        Ok(State::existing(id, to.attributes.clone()))
+    }
+
     // ========== EC2 Security Group Operations ==========
 
     /// Find Security Group ID by Name tag (not group-name)
@@ -1446,7 +1626,12 @@ impl AwsProvider {
             }
 
             if let Some(protocol) = rule.ip_protocol() {
-                attributes.insert("protocol".to_string(), Value::String(protocol.to_string()));
+                // Convert AWS protocol format to DSL format
+                let protocol_dsl = match protocol {
+                    "-1" => "aws.Protocol.all".to_string(),
+                    p => format!("aws.Protocol.{}", p),
+                };
+                attributes.insert("protocol".to_string(), Value::String(protocol_dsl));
             }
 
             if let Some(from_port) = rule.from_port() {
@@ -1491,7 +1676,7 @@ impl AwsProvider {
         };
 
         let protocol = match resource.attributes.get("protocol") {
-            Some(Value::String(s)) => s.clone(),
+            Some(Value::String(s)) => convert_protocol_value(s),
             _ => "-1".to_string(),
         };
 
@@ -1654,6 +1839,7 @@ impl Provider for AwsProvider {
             Box::new(SubnetType),
             Box::new(InternetGatewayType),
             Box::new(RouteTableType),
+            Box::new(RouteType),
             Box::new(SecurityGroupType),
             Box::new(SecurityGroupIngressRuleType),
             Box::new(SecurityGroupEgressRuleType),
@@ -1664,11 +1850,12 @@ impl Provider for AwsProvider {
         let id = id.clone();
         Box::pin(async move {
             match id.resource_type.as_str() {
-                "s3_bucket" => self.read_s3_bucket(&id.name).await,
+                "s3.bucket" => self.read_s3_bucket(&id.name).await,
                 "vpc" => self.read_ec2_vpc(&id.name).await,
                 "subnet" => self.read_ec2_subnet(&id.name).await,
                 "internet_gateway" => self.read_ec2_internet_gateway(&id.name).await,
                 "route_table" => self.read_ec2_route_table(&id.name).await,
+                "route" => self.read_ec2_route(&id.name).await,
                 "security_group" => self.read_ec2_security_group(&id.name).await,
                 "security_group.ingress_rule" => {
                     self.read_ec2_security_group_rule(&id.name, true).await
@@ -1689,11 +1876,12 @@ impl Provider for AwsProvider {
         let resource = resource.clone();
         Box::pin(async move {
             match resource.id.resource_type.as_str() {
-                "s3_bucket" => self.create_s3_bucket(resource).await,
+                "s3.bucket" => self.create_s3_bucket(resource).await,
                 "vpc" => self.create_ec2_vpc(resource).await,
                 "subnet" => self.create_ec2_subnet(resource).await,
                 "internet_gateway" => self.create_ec2_internet_gateway(resource).await,
                 "route_table" => self.create_ec2_route_table(resource).await,
+                "route" => self.create_ec2_route(resource).await,
                 "security_group" => self.create_ec2_security_group(resource).await,
                 "security_group.ingress_rule" => {
                     self.create_ec2_security_group_rule(resource, true).await
@@ -1720,11 +1908,12 @@ impl Provider for AwsProvider {
         let to = to.clone();
         Box::pin(async move {
             match id.resource_type.as_str() {
-                "s3_bucket" => self.update_s3_bucket(id, to).await,
+                "s3.bucket" => self.update_s3_bucket(id, to).await,
                 "vpc" => self.update_ec2_vpc(id, to).await,
                 "subnet" => self.update_ec2_subnet(id, to).await,
                 "internet_gateway" => self.update_ec2_internet_gateway(id, to).await,
                 "route_table" => self.update_ec2_route_table(id, to).await,
+                "route" => self.update_ec2_route(id, to).await,
                 "security_group" => self.update_ec2_security_group(id, to).await,
                 "security_group.ingress_rule" => {
                     self.update_ec2_security_group_rule(id, to, true).await
@@ -1745,11 +1934,17 @@ impl Provider for AwsProvider {
         let id = id.clone();
         Box::pin(async move {
             match id.resource_type.as_str() {
-                "s3_bucket" => self.delete_s3_bucket(id).await,
+                "s3.bucket" => self.delete_s3_bucket(id).await,
                 "vpc" => self.delete_ec2_vpc(id).await,
                 "subnet" => self.delete_ec2_subnet(id).await,
                 "internet_gateway" => self.delete_ec2_internet_gateway(id).await,
                 "route_table" => self.delete_ec2_route_table(id).await,
+                "route" => {
+                    // Route deletion requires route_table_id and destination_cidr_block
+                    // which are not available from ResourceId alone.
+                    // Routes are typically deleted when the route table is deleted.
+                    Ok(())
+                }
                 "security_group" => self.delete_ec2_security_group(id).await,
                 "security_group.ingress_rule" => {
                     self.delete_ec2_security_group_rule(id, true).await
@@ -1767,16 +1962,50 @@ impl Provider for AwsProvider {
     }
 }
 
-/// Convert DSL region value (aws.Region.ap_northeast_1) to AWS SDK format (ap-northeast-1)
-fn convert_region_value(value: &str) -> String {
-    if value.starts_with("aws.Region.") {
-        value
-            .strip_prefix("aws.Region.")
-            .unwrap_or(value)
-            .replace('_', "-")
-    } else {
-        value.to_string()
-    }
+/// Convert DSL enum value (provider.TypeName.value_name) to AWS SDK format (value-name)
+/// Handles patterns like:
+/// - aws.Region.ap_northeast_1 -> ap-northeast-1
+/// - aws.AvailabilityZone.ap_northeast_1a -> ap-northeast-1a
+/// - Region.ap_northeast_1 -> ap-northeast-1
+fn convert_enum_value(value: &str) -> String {
+    let parts: Vec<&str> = value.split('.').collect();
+
+    let raw_value = match parts.len() {
+        2 => {
+            // TypeName.value pattern
+            if parts[0].chars().next().is_some_and(|c| c.is_uppercase()) {
+                parts[1]
+            } else {
+                return value.to_string();
+            }
+        }
+        3 => {
+            // provider.TypeName.value pattern
+            let provider = parts[0];
+            let type_name = parts[1];
+            if provider.chars().all(|c| c.is_lowercase())
+                && type_name.chars().next().is_some_and(|c| c.is_uppercase())
+            {
+                parts[2]
+            } else {
+                return value.to_string();
+            }
+        }
+        _ => return value.to_string(),
+    };
+
+    raw_value.replace('_', "-")
+}
+
+/// Convert protocol value from DSL format to AWS format
+/// - aws.Protocol.tcp / Protocol.tcp / tcp -> tcp
+/// - aws.Protocol.all / Protocol.all / all / -1 -> -1
+fn convert_protocol_value(value: &str) -> String {
+    // First convert DSL enum format to raw value
+    let raw = convert_enum_value(value);
+
+    // Handle special case: "all" means "-1" (all protocols)
+    if raw == "all" { "-1".to_string() } else { raw }
 }
 
 #[cfg(test)]
@@ -1784,18 +2013,35 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_convert_region_value() {
+    fn test_convert_enum_value() {
+        // Region
         assert_eq!(
-            convert_region_value("aws.Region.ap_northeast_1"),
+            convert_enum_value("aws.Region.ap_northeast_1"),
             "ap-northeast-1"
         );
-        assert_eq!(convert_region_value("aws.Region.us_east_1"), "us-east-1");
-        assert_eq!(convert_region_value("eu-west-1"), "eu-west-1");
+        assert_eq!(convert_enum_value("aws.Region.us_east_1"), "us-east-1");
+        // AvailabilityZone
+        assert_eq!(
+            convert_enum_value("aws.AvailabilityZone.ap_northeast_1a"),
+            "ap-northeast-1a"
+        );
+        assert_eq!(
+            convert_enum_value("aws.AvailabilityZone.us_east_1b"),
+            "us-east-1b"
+        );
+        // TypeName.value pattern
+        assert_eq!(
+            convert_enum_value("Region.ap_northeast_1"),
+            "ap-northeast-1"
+        );
+        // Already in AWS format (no conversion needed)
+        assert_eq!(convert_enum_value("eu-west-1"), "eu-west-1");
+        assert_eq!(convert_enum_value("ap-northeast-1a"), "ap-northeast-1a");
     }
 
     #[test]
     fn test_s3_bucket_type_name() {
         let bucket_type = S3BucketType;
-        assert_eq!(bucket_type.name(), "s3_bucket");
+        assert_eq!(bucket_type.name(), "s3.bucket");
     }
 }

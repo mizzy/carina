@@ -1,8 +1,8 @@
 use tower_lsp::lsp_types::{Hover, HoverContents, MarkupContent, MarkupKind, Position};
 
 use crate::document::Document;
-use carina_core::providers::{ec2, s3};
 use carina_core::schema::ResourceSchema;
+use carina_provider_aws::schemas::{s3, vpc};
 
 pub struct HoverProvider;
 
@@ -45,38 +45,38 @@ impl HoverProvider {
 
         // EC2/VPC resources
         if word == "aws.vpc" || word.contains(".vpc") && !word.contains("vpc_id") {
-            return self.schema_hover("aws.vpc", &ec2::vpc_schema());
+            return self.schema_hover("aws.vpc", &vpc::vpc_schema());
         }
 
         if word == "aws.subnet" || word.contains(".subnet") && !word.contains("subnet_id") {
-            return self.schema_hover("aws.subnet", &ec2::subnet_schema());
+            return self.schema_hover("aws.subnet", &vpc::subnet_schema());
         }
 
         if word == "aws.internet_gateway" || word.contains("internet_gateway") {
-            return self.schema_hover("aws.internet_gateway", &ec2::internet_gateway_schema());
+            return self.schema_hover("aws.internet_gateway", &vpc::internet_gateway_schema());
         }
 
         if word == "aws.route_table" || word.contains("route_table") {
-            return self.schema_hover("aws.route_table", &ec2::route_table_schema());
+            return self.schema_hover("aws.route_table", &vpc::route_table_schema());
         }
 
         if word == "aws.security_group.ingress_rule" || word.contains("security_group.ingress_rule")
         {
             return self.schema_hover(
                 "aws.security_group.ingress_rule",
-                &ec2::security_group_ingress_rule_schema(),
+                &vpc::security_group_ingress_rule_schema(),
             );
         }
 
         if word == "aws.security_group.egress_rule" || word.contains("security_group.egress_rule") {
             return self.schema_hover(
                 "aws.security_group.egress_rule",
-                &ec2::security_group_egress_rule_schema(),
+                &vpc::security_group_egress_rule_schema(),
             );
         }
 
         if word == "aws.security_group" || word.contains("security_group") {
-            return self.schema_hover("aws.security_group", &ec2::security_group_schema());
+            return self.schema_hover("aws.security_group", &vpc::security_group_schema());
         }
 
         None
@@ -112,13 +112,13 @@ impl HoverProvider {
         // Check all schemas for the attribute
         let schemas = vec![
             s3::bucket_schema(),
-            ec2::vpc_schema(),
-            ec2::subnet_schema(),
-            ec2::internet_gateway_schema(),
-            ec2::route_table_schema(),
-            ec2::security_group_schema(),
-            ec2::security_group_ingress_rule_schema(),
-            ec2::security_group_egress_rule_schema(),
+            vpc::vpc_schema(),
+            vpc::subnet_schema(),
+            vpc::internet_gateway_schema(),
+            vpc::route_table_schema(),
+            vpc::security_group_schema(),
+            vpc::security_group_ingress_rule_schema(),
+            vpc::security_group_egress_rule_schema(),
         ];
 
         for schema in schemas {
