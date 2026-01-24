@@ -73,7 +73,7 @@ impl DiagnosticEngine {
                     }
                 }
 
-                // Check for ResourceRef used where String is expected
+                // Check for ResourceRef or resource binding used where String is expected
                 let schema = self.get_schema_for_type(&resource.id.resource_type);
                 if let Some(schema) = schema {
                     for (attr_name, attr_value) in &resource.attributes {
@@ -81,21 +81,53 @@ impl DiagnosticEngine {
                             continue; // Skip internal attributes
                         }
 
-                        if let Some(attr_schema) = schema.attributes.get(attr_name)
-                            && let Value::ResourceRef(binding, _) = attr_value
-                            && matches!(
-                                attr_schema.attr_type,
-                                carina_core::schema::AttributeType::String
-                            )
+                        // Check if attr expects a String type
+                        let expects_string = schema
+                            .attributes
+                            .get(attr_name)
+                            .map(|s| {
+                                matches!(s.attr_type, carina_core::schema::AttributeType::String)
+                            })
+                            .unwrap_or(false);
+
+                        if !expects_string {
+                            continue;
+                        }
+
+                        // Check for ResourceRef (e.g., vpc.name when misused)
+                        if let Value::ResourceRef(binding, _) = attr_value
                             && let Some((line, col)) =
                                 self.find_attribute_value_position(doc, attr_name, binding)
                         {
                             diagnostics.push(Diagnostic {
                                 range: Range {
-                                    start: Position {
+                                    start: Position { line, character: col },
+                                    end: Position {
                                         line,
-                                        character: col,
+                                        character: col + binding.len() as u32,
                                     },
+                                },
+                                severity: Some(DiagnosticSeverity::WARNING),
+                                source: Some("carina".to_string()),
+                                message: format!(
+                                    "Expected string, got resource reference '{}'. Did you mean '{}.name'?",
+                                    binding, binding
+                                ),
+                                ..Default::default()
+                            });
+                        }
+
+                        // Check for resource binding placeholder ${binding}
+                        // This happens when you write `vpc = vpc` instead of `vpc = vpc.name`
+                        if let Value::String(s) = attr_value
+                            && let Some(binding) =
+                                s.strip_prefix("${").and_then(|s| s.strip_suffix("}"))
+                            && let Some((line, col)) =
+                                self.find_attribute_value_position(doc, attr_name, binding)
+                        {
+                            diagnostics.push(Diagnostic {
+                                range: Range {
+                                    start: Position { line, character: col },
                                     end: Position {
                                         line,
                                         character: col + binding.len() as u32,
