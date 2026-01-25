@@ -33,7 +33,13 @@ impl Backend {
 
     async fn update_diagnostics(&self, uri: Url) {
         if let Some(doc) = self.documents.get(&uri) {
-            let diagnostics = self.diagnostic_engine.analyze(&doc);
+            // Get base path from URI for module resolution
+            let base_path = uri
+                .to_file_path()
+                .ok()
+                .and_then(|p| p.parent().map(|p| p.to_path_buf()));
+
+            let diagnostics = self.diagnostic_engine.analyze(&doc, base_path.as_deref());
             self.client
                 .publish_diagnostics(uri, diagnostics, None)
                 .await;
@@ -111,7 +117,15 @@ impl LanguageServer for Backend {
         let position = params.text_document_position.position;
 
         if let Some(doc) = self.documents.get(uri) {
-            let completions = self.completion_provider.complete(&doc, position);
+            // Get base path from URI for module resolution
+            let base_path = uri
+                .to_file_path()
+                .ok()
+                .and_then(|p| p.parent().map(|p| p.to_path_buf()));
+
+            let completions =
+                self.completion_provider
+                    .complete(&doc, position, base_path.as_deref());
             return Ok(Some(CompletionResponse::Array(completions)));
         }
         Ok(None)

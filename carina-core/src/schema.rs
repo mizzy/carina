@@ -140,6 +140,11 @@ impl Value {
             Value::List(_) => "List".to_string(),
             Value::Map(_) => "Map".to_string(),
             Value::ResourceRef(binding, attr) => format!("ResourceRef({}.{})", binding, attr),
+            Value::TypedResourceRef {
+                binding_name,
+                attribute_name,
+                ..
+            } => format!("TypedResourceRef({}.{})", binding_name, attribute_name),
         }
     }
 }
@@ -316,6 +321,63 @@ pub mod types {
             },
         }
     }
+
+    /// CIDR block type (e.g., "10.0.0.0/16")
+    pub fn cidr() -> AttributeType {
+        AttributeType::Custom {
+            name: "Cidr".to_string(),
+            base: Box::new(AttributeType::String),
+            validate: |value| {
+                if let Value::String(s) = value {
+                    validate_cidr(s)
+                } else {
+                    Err("Expected string".to_string())
+                }
+            },
+        }
+    }
+}
+
+/// Validate CIDR block format (e.g., "10.0.0.0/16")
+pub fn validate_cidr(cidr: &str) -> Result<(), String> {
+    let parts: Vec<&str> = cidr.split('/').collect();
+    if parts.len() != 2 {
+        return Err(format!(
+            "Invalid CIDR format '{}': expected IP/prefix",
+            cidr
+        ));
+    }
+
+    let ip = parts[0];
+    let prefix = parts[1];
+
+    // Validate IP address
+    let octets: Vec<&str> = ip.split('.').collect();
+    if octets.len() != 4 {
+        return Err(format!("Invalid IP address '{}': expected 4 octets", ip));
+    }
+
+    for octet in &octets {
+        match octet.parse::<u8>() {
+            Ok(_) => {}
+            Err(_) => {
+                return Err(format!(
+                    "Invalid octet '{}' in IP address: must be 0-255",
+                    octet
+                ));
+            }
+        }
+    }
+
+    // Validate prefix length
+    match prefix.parse::<u8>() {
+        Ok(p) if p <= 32 => Ok(()),
+        Ok(p) => Err(format!("Invalid prefix length '{}': must be 0-32", p)),
+        Err(_) => Err(format!(
+            "Invalid prefix length '{}': must be a number",
+            prefix
+        )),
+    }
 }
 
 #[cfg(test)]
@@ -383,5 +445,39 @@ mod tests {
         let attrs = HashMap::new();
         let result = schema.validate(&attrs);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn validate_cidr_type() {
+        let t = types::cidr();
+
+        // Valid CIDRs
+        assert!(
+            t.validate(&Value::String("10.0.0.0/16".to_string()))
+                .is_ok()
+        );
+        assert!(
+            t.validate(&Value::String("192.168.1.0/24".to_string()))
+                .is_ok()
+        );
+        assert!(t.validate(&Value::String("0.0.0.0/0".to_string())).is_ok());
+        assert!(
+            t.validate(&Value::String("255.255.255.255/32".to_string()))
+                .is_ok()
+        );
+
+        // Invalid CIDRs
+        assert!(t.validate(&Value::String("10.0.0.0".to_string())).is_err()); // no prefix
+        assert!(
+            t.validate(&Value::String("10.0.0.0/33".to_string()))
+                .is_err()
+        ); // prefix too large
+        assert!(
+            t.validate(&Value::String("10.0.0.256/16".to_string()))
+                .is_err()
+        ); // octet > 255
+        assert!(t.validate(&Value::String("10.0.0/16".to_string())).is_err()); // only 3 octets
+        assert!(t.validate(&Value::String("invalid".to_string())).is_err()); // not a CIDR
+        assert!(t.validate(&Value::Int(42)).is_err()); // wrong type
     }
 }

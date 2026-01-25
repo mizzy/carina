@@ -2,6 +2,8 @@
 
 use std::collections::HashMap;
 
+use crate::parser::ResourceTypePath;
+
 /// Unique identifier for a resource
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ResourceId {
@@ -30,6 +32,15 @@ pub enum Value {
     Map(HashMap<String, Value>),
     /// Reference to another resource's attribute (binding_name, attribute_name)
     ResourceRef(String, String),
+    /// Typed reference to another resource's attribute with optional type information
+    TypedResourceRef {
+        /// Binding name of the referenced resource (e.g., "vpc", "web_sg")
+        binding_name: String,
+        /// Attribute name being referenced (e.g., "id", "name")
+        attribute_name: String,
+        /// Optional resource type for type checking (e.g., aws.vpc)
+        resource_type: Option<ResourceTypePath>,
+    },
 }
 
 /// Desired state declared in DSL

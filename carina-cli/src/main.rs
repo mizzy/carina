@@ -9,6 +9,7 @@ use similar::{ChangeTag, TextDiff};
 use carina_core::differ::create_plan;
 use carina_core::effect::Effect;
 use carina_core::formatter::{self, FormatConfig};
+use carina_core::module_resolver;
 use carina_core::parser::{self, ParsedFile};
 use carina_core::plan::Plan;
 use carina_core::provider::{BoxFuture, Provider, ProviderError, ProviderResult, ResourceType};
@@ -65,6 +66,20 @@ enum Commands {
         #[arg(long, short)]
         recursive: bool,
     },
+    /// Module management commands
+    Module {
+        #[command(subcommand)]
+        command: ModuleCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum ModuleCommands {
+    /// Show module structure and dependencies
+    Info {
+        /// Path to module .crn file
+        file: PathBuf,
+    },
 }
 
 #[tokio::main]
@@ -81,6 +96,7 @@ async fn main() {
             diff,
             recursive,
         } => run_fmt(&path, check, diff, recursive),
+        Commands::Module { command } => run_module_command(command),
     };
 
     if let Err(e) = result {
@@ -121,12 +137,118 @@ fn validate_resources(resources: &[Resource]) -> Result<(), String> {
     }
 }
 
+fn run_module_command(command: ModuleCommands) -> Result<(), String> {
+    match command {
+        ModuleCommands::Info { file } => run_module_info(&file),
+    }
+}
+
+fn run_module_info(path: &PathBuf) -> Result<(), String> {
+    let parsed = if path.is_dir() {
+        // Read all .crn files in the directory and merge them
+        load_module_from_directory(path)?
+    } else {
+        module_resolver::get_parsed_file(path).map_err(|e| format!("Failed to load file: {}", e))?
+    };
+
+    // Derive module name from directory structure
+    // For directory-based modules like modules/web_tier/, use the directory name
+    // For file-based modules like modules/web_tier.crn, use the file stem
+    let module_name = derive_module_name(path);
+
+    // Build and display the file signature (module or root config)
+    let signature =
+        carina_core::module::FileSignature::from_parsed_file_with_name(&parsed, &module_name);
+    println!("{}", signature.display());
+
+    Ok(())
+}
+
+/// Load a module from a directory by reading all .crn files
+fn load_module_from_directory(dir: &PathBuf) -> Result<ParsedFile, String> {
+    let entries = fs::read_dir(dir)
+        .map_err(|e| format!("Failed to read directory {}: {}", dir.display(), e))?;
+
+    let mut merged = ParsedFile {
+        providers: vec![],
+        resources: vec![],
+        variables: std::collections::HashMap::new(),
+        imports: vec![],
+        module_calls: vec![],
+        inputs: vec![],
+        outputs: vec![],
+    };
+
+    for entry in entries {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let path = entry.path();
+
+        if path.extension().is_some_and(|ext| ext == "crn") {
+            let content = fs::read_to_string(&path)
+                .map_err(|e| format!("Failed to read {}: {}", path.display(), e))?;
+
+            let parsed = parser::parse(&content)
+                .map_err(|e| format!("Failed to parse {}: {}", path.display(), e))?;
+
+            // Merge parsed content
+            merged.providers.extend(parsed.providers);
+            merged.resources.extend(parsed.resources);
+            merged.variables.extend(parsed.variables);
+            merged.imports.extend(parsed.imports);
+            merged.module_calls.extend(parsed.module_calls);
+            merged.inputs.extend(parsed.inputs);
+            merged.outputs.extend(parsed.outputs);
+        }
+    }
+
+    Ok(merged)
+}
+
+/// Derive the module name from a file or directory path
+/// Examples:
+/// - modules/web_tier/ -> web_tier (directory)
+/// - modules/web_tier/main.crn -> web_tier (directory-based)
+/// - modules/web_tier.crn -> web_tier (file-based)
+/// - web_tier.crn -> web_tier
+fn derive_module_name(path: &Path) -> String {
+    // If it's a directory, use the directory name
+    if path.is_dir() {
+        return path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown")
+            .to_string();
+    }
+
+    let file_stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("unknown");
+
+    // If file is named main.crn, use the parent directory name
+    if file_stem == "main"
+        && let Some(parent) = path.parent()
+        && let Some(parent_name) = parent.file_name()
+        && let Some(name) = parent_name.to_str()
+    {
+        return name.to_string();
+    }
+
+    // Otherwise use the file stem
+    file_stem.to_string()
+}
+
 fn run_validate(file: &PathBuf) -> Result<(), String> {
     let content = fs::read_to_string(file)
         .map_err(|e| format!("Failed to read {}: {}", file.display(), e))?;
 
     let mut parsed =
         parser::parse_and_resolve(&content).map_err(|e| format!("Parse error: {}", e))?;
+
+    // Resolve module imports and expand module calls
+    let base_dir = file.parent().unwrap_or(Path::new("."));
+    module_resolver::resolve_modules(&mut parsed, base_dir)
+        .map_err(|e| format!("Module resolution error: {}", e))?;
 
     // Apply default region from provider
     apply_default_region(&mut parsed);
@@ -159,6 +281,11 @@ async fn run_plan(file: &PathBuf) -> Result<(), String> {
     let mut parsed =
         parser::parse_and_resolve(&content).map_err(|e| format!("Parse error: {}", e))?;
 
+    // Resolve module imports and expand module calls
+    let base_dir = file.parent().unwrap_or(Path::new("."));
+    module_resolver::resolve_modules(&mut parsed, base_dir)
+        .map_err(|e| format!("Module resolution error: {}", e))?;
+
     // Apply default region from provider
     apply_default_region(&mut parsed);
 
@@ -175,6 +302,11 @@ async fn run_apply(file: &PathBuf) -> Result<(), String> {
 
     let mut parsed =
         parser::parse_and_resolve(&content).map_err(|e| format!("Parse error: {}", e))?;
+
+    // Resolve module imports and expand module calls
+    let base_dir = file.parent().unwrap_or(Path::new("."));
+    module_resolver::resolve_modules(&mut parsed, base_dir)
+        .map_err(|e| format!("Module resolution error: {}", e))?;
 
     // Apply default region from provider
     apply_default_region(&mut parsed);
@@ -499,6 +631,20 @@ fn resolve_ref_value(
             // Keep as-is if not found
             value.clone()
         }
+        Value::TypedResourceRef {
+            binding_name,
+            attribute_name,
+            ..
+        } => {
+            if let Some(attrs) = binding_map.get(binding_name)
+                && let Some(attr_value) = attrs.get(attribute_name)
+            {
+                // Recursively resolve
+                return resolve_ref_value(attr_value, binding_map);
+            }
+            // Keep as-is if not found
+            value.clone()
+        }
         Value::List(items) => Value::List(
             items
                 .iter()
@@ -526,6 +672,9 @@ fn get_resource_dependencies(resource: &Resource) -> HashSet<String> {
 fn collect_dependencies(value: &Value, deps: &mut HashSet<String>) {
     match value {
         Value::ResourceRef(binding_name, _) => {
+            deps.insert(binding_name.clone());
+        }
+        Value::TypedResourceRef { binding_name, .. } => {
             deps.insert(binding_name.clone());
         }
         Value::List(items) => {
@@ -820,6 +969,11 @@ fn format_value_with_key(value: &Value, _key: Option<&str>) -> String {
             format!("{{{}}}", strs.join(", "))
         }
         Value::ResourceRef(binding, attr) => format!("{}.{}", binding, attr),
+        Value::TypedResourceRef {
+            binding_name,
+            attribute_name,
+            ..
+        } => format!("{}.{}", binding_name, attribute_name),
     }
 }
 
@@ -877,6 +1031,12 @@ impl FileProvider {
             Value::ResourceRef(binding, attr) => {
                 serde_json::Value::String(format!("${{{}.{}}}", binding, attr))
             }
+            // TypedResourceRef should be resolved before reaching here, but handle it as a string
+            Value::TypedResourceRef {
+                binding_name,
+                attribute_name,
+                ..
+            } => serde_json::Value::String(format!("${{{}.{}}}", binding_name, attribute_name)),
         }
     }
 

@@ -1,9 +1,11 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::path::Path;
 use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity, Position, Range};
 
 use crate::document::Document;
-use carina_core::parser::ParseError;
+use carina_core::parser::{InputParameter, ParseError, ParsedFile, TypeExpr};
 use carina_core::resource::Value;
+use carina_core::schema::validate_cidr;
 use carina_provider_aws::schemas::{s3, vpc};
 
 pub struct DiagnosticEngine {
@@ -32,7 +34,7 @@ impl DiagnosticEngine {
         }
     }
 
-    pub fn analyze(&self, doc: &Document) -> Vec<Diagnostic> {
+    pub fn analyze(&self, doc: &Document, base_path: Option<&Path>) -> Vec<Diagnostic> {
         let mut diagnostics = Vec::new();
         let text = doc.text();
 
@@ -49,6 +51,10 @@ impl DiagnosticEngine {
 
         // Semantic analysis on parsed file
         if let Some(parsed) = doc.parsed() {
+            // Check module calls
+            if let Some(base) = base_path {
+                diagnostics.extend(self.check_module_calls(doc, parsed, base));
+            }
             // Check resource types
             for resource in &parsed.resources {
                 if !self
@@ -248,6 +254,213 @@ impl DiagnosticEngine {
         None
     }
 
+    /// Check module calls against imported module definitions
+    fn check_module_calls(
+        &self,
+        doc: &Document,
+        parsed: &ParsedFile,
+        base_path: &Path,
+    ) -> Vec<Diagnostic> {
+        let mut diagnostics = Vec::new();
+
+        // Build a map of imported modules: alias -> input parameters
+        let mut imported_modules: HashMap<String, Vec<InputParameter>> = HashMap::new();
+
+        for import in &parsed.imports {
+            let module_path = base_path.join(&import.path);
+            if let Ok(content) = std::fs::read_to_string(&module_path)
+                && let Ok(module_parsed) = carina_core::parser::parse(&content)
+            {
+                imported_modules.insert(import.alias.clone(), module_parsed.inputs);
+            }
+        }
+
+        // Check each module call
+        for call in &parsed.module_calls {
+            if let Some(module_inputs) = imported_modules.get(&call.module_name) {
+                // Check for unknown parameters
+                for (arg_name, arg_value) in &call.arguments {
+                    let matching_input = module_inputs.iter().find(|input| &input.name == arg_name);
+
+                    if matching_input.is_none() {
+                        if let Some((line, col)) =
+                            self.find_module_call_arg_position(doc, &call.module_name, arg_name)
+                        {
+                            // Find similar parameter names for suggestion
+                            let suggestion = module_inputs
+                                .iter()
+                                .find(|input| {
+                                    input.name.contains(arg_name) || arg_name.contains(&input.name)
+                                })
+                                .map(|input| format!(". Did you mean '{}'?", input.name))
+                                .unwrap_or_default();
+
+                            diagnostics.push(Diagnostic {
+                                range: Range {
+                                    start: Position {
+                                        line,
+                                        character: col,
+                                    },
+                                    end: Position {
+                                        line,
+                                        character: col + arg_name.len() as u32,
+                                    },
+                                },
+                                severity: Some(DiagnosticSeverity::WARNING),
+                                source: Some("carina".to_string()),
+                                message: format!(
+                                    "Unknown parameter '{}' for module '{}'{}",
+                                    arg_name, call.module_name, suggestion
+                                ),
+                                ..Default::default()
+                            });
+                        }
+                        continue;
+                    }
+
+                    // Type validation for known parameters
+                    let input = matching_input.unwrap();
+                    if let Some(type_error) =
+                        self.validate_module_arg_type(&input.type_expr, arg_value)
+                        && let Some((line, col)) =
+                            self.find_module_call_arg_position(doc, &call.module_name, arg_name)
+                    {
+                        diagnostics.push(Diagnostic {
+                            range: Range {
+                                start: Position {
+                                    line,
+                                    character: col,
+                                },
+                                end: Position {
+                                    line,
+                                    character: col + arg_name.len() as u32,
+                                },
+                            },
+                            severity: Some(DiagnosticSeverity::WARNING),
+                            source: Some("carina".to_string()),
+                            message: type_error,
+                            ..Default::default()
+                        });
+                    }
+                }
+
+                // Check for missing required parameters
+                for input in module_inputs {
+                    if input.default.is_none()
+                        && !call.arguments.contains_key(&input.name)
+                        && let Some((line, col)) =
+                            self.find_module_call_position(doc, &call.module_name)
+                    {
+                        diagnostics.push(Diagnostic {
+                            range: Range {
+                                start: Position {
+                                    line,
+                                    character: col,
+                                },
+                                end: Position {
+                                    line,
+                                    character: col + call.module_name.len() as u32,
+                                },
+                            },
+                            severity: Some(DiagnosticSeverity::ERROR),
+                            source: Some("carina".to_string()),
+                            message: format!(
+                                "Missing required parameter '{}' for module '{}'",
+                                input.name, call.module_name
+                            ),
+                            ..Default::default()
+                        });
+                    }
+                }
+            }
+        }
+
+        diagnostics
+    }
+
+    /// Validate a module argument value against its expected type
+    fn validate_module_arg_type(&self, type_expr: &TypeExpr, value: &Value) -> Option<String> {
+        match (type_expr, value) {
+            // CIDR type validation
+            (TypeExpr::Cidr, Value::String(s)) => validate_cidr(s).err(),
+            // List of CIDR type validation
+            (TypeExpr::List(inner), Value::List(items)) => {
+                if let TypeExpr::Cidr = inner.as_ref() {
+                    for (i, item) in items.iter().enumerate() {
+                        if let Value::String(s) = item {
+                            if let Err(e) = validate_cidr(s) {
+                                return Some(format!("Element {}: {}", i, e));
+                            }
+                        } else {
+                            return Some(format!("Element {}: expected string, got {:?}", i, item));
+                        }
+                    }
+                }
+                None
+            }
+            // Bool type validation
+            (TypeExpr::Bool, Value::String(s)) => Some(format!(
+                "Type mismatch: expected bool, got string \"{}\". Use true or false.",
+                s
+            )),
+            // Int type validation
+            (TypeExpr::Int, Value::String(s)) => Some(format!(
+                "Type mismatch: expected int, got string \"{}\".",
+                s
+            )),
+            _ => None,
+        }
+    }
+
+    /// Find the position of a module call in the document
+    fn find_module_call_position(&self, doc: &Document, module_name: &str) -> Option<(u32, u32)> {
+        let text = doc.text();
+        let pattern = format!("{} {{", module_name);
+
+        for (line_idx, line) in text.lines().enumerate() {
+            if let Some(col) = line.find(&pattern) {
+                return Some((line_idx as u32, col as u32));
+            }
+        }
+        None
+    }
+
+    /// Find the position of an argument in a module call
+    fn find_module_call_arg_position(
+        &self,
+        doc: &Document,
+        module_name: &str,
+        arg_name: &str,
+    ) -> Option<(u32, u32)> {
+        let text = doc.text();
+        let mut in_module_call = false;
+        let module_pattern = format!("{} {{", module_name);
+
+        for (line_idx, line) in text.lines().enumerate() {
+            if line.contains(&module_pattern) {
+                in_module_call = true;
+            }
+
+            if in_module_call {
+                let trimmed = line.trim_start();
+                if trimmed.starts_with(arg_name)
+                    && trimmed[arg_name.len()..]
+                        .chars()
+                        .next()
+                        .is_some_and(|c| c == ' ' || c == '=')
+                {
+                    let leading_ws = line.len() - trimmed.len();
+                    return Some((line_idx as u32, leading_ws as u32));
+                }
+
+                if trimmed == "}" {
+                    in_module_call = false;
+                }
+            }
+        }
+        None
+    }
+
     /// Extract resource binding names from text (variables defined with `let binding_name = aws...`)
     fn extract_resource_bindings(&self, text: &str) -> HashSet<String> {
         let mut bindings = HashSet::new();
@@ -403,6 +616,20 @@ fn parse_error_to_diagnostic(error: &ParseError) -> Diagnostic {
             severity: Some(DiagnosticSeverity::ERROR),
             source: Some("carina".to_string()),
             message: format!("Invalid resource type: {}", name),
+            ..Default::default()
+        },
+        ParseError::DuplicateModule(name) => Diagnostic {
+            range: Range::default(),
+            severity: Some(DiagnosticSeverity::ERROR),
+            source: Some("carina".to_string()),
+            message: format!("Duplicate module definition: {}", name),
+            ..Default::default()
+        },
+        ParseError::ModuleNotFound(name) => Diagnostic {
+            range: Range::default(),
+            severity: Some(DiagnosticSeverity::ERROR),
+            source: Some("carina".to_string()),
+            message: format!("Module not found: {}", name),
             ..Default::default()
         },
     }

@@ -19,8 +19,10 @@ impl HoverProvider {
             return Some(hover);
         }
 
-        // Check for attribute hover
-        if let Some(hover) = self.attribute_hover(&word) {
+        // Check for attribute hover (but not in module call context)
+        if !self.is_in_module_call(doc, position)
+            && let Some(hover) = self.attribute_hover(&word)
+        {
             return Some(hover);
         }
 
@@ -35,6 +37,49 @@ impl HoverProvider {
         }
 
         None
+    }
+
+    /// Check if the position is inside a module call block
+    fn is_in_module_call(&self, doc: &Document, position: Position) -> bool {
+        let text = doc.text();
+        let lines: Vec<&str> = text.lines().collect();
+        let current_line = position.line as usize;
+
+        // Look backwards to find if we're in a module call block
+        // Module calls look like: module_name { ... }
+        // They don't start with "let" or "aws."
+        let mut brace_depth = 0;
+
+        for line_idx in (0..=current_line).rev() {
+            let line = lines.get(line_idx).unwrap_or(&"");
+            let trimmed = line.trim();
+
+            // Count braces in this line (simplified)
+            for ch in trimmed.chars() {
+                if ch == '}' {
+                    brace_depth += 1;
+                } else if ch == '{' {
+                    if brace_depth > 0 {
+                        brace_depth -= 1;
+                    } else {
+                        // Found opening brace, check if it's a module call
+                        // Module calls: identifier { (not "let x = ..." or "aws.x.y {")
+                        if !trimmed.starts_with("let ")
+                            && !trimmed.starts_with("aws.")
+                            && !trimmed.starts_with("provider ")
+                            && !trimmed.starts_with("input ")
+                            && !trimmed.starts_with("output ")
+                            && trimmed.ends_with('{')
+                        {
+                            return true;
+                        }
+                        return false;
+                    }
+                }
+            }
+        }
+
+        false
     }
 
     fn resource_type_hover(&self, word: &str) -> Option<Hover> {

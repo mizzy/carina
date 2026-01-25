@@ -30,6 +30,108 @@ pub enum ParseError {
 
     #[error("Invalid resource type: {0}")]
     InvalidResourceType(String),
+
+    #[error("Duplicate module definition: {0}")]
+    DuplicateModule(String),
+
+    #[error("Module not found: {0}")]
+    ModuleNotFound(String),
+}
+
+/// Resource type path for typed references (e.g., aws.vpc, aws.security_group)
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResourceTypePath {
+    /// Provider name (e.g., "aws")
+    pub provider: String,
+    /// Resource type (e.g., "vpc", "security_group")
+    pub resource_type: String,
+}
+
+impl ResourceTypePath {
+    pub fn new(provider: impl Into<String>, resource_type: impl Into<String>) -> Self {
+        Self {
+            provider: provider.into(),
+            resource_type: resource_type.into(),
+        }
+    }
+
+    /// Parse from a dot-separated string (e.g., "aws.vpc" or "aws.security_group")
+    pub fn parse(s: &str) -> Option<Self> {
+        let parts: Vec<&str> = s.split('.').collect();
+        if parts.len() >= 2 {
+            Some(Self {
+                provider: parts[0].to_string(),
+                resource_type: parts[1..].join("."),
+            })
+        } else {
+            None
+        }
+    }
+}
+
+impl std::fmt::Display for ResourceTypePath {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}.{}", self.provider, self.resource_type)
+    }
+}
+
+/// Type expression for input/output parameters
+#[derive(Debug, Clone, PartialEq)]
+pub enum TypeExpr {
+    String,
+    Bool,
+    Int,
+    /// CIDR block (e.g., "10.0.0.0/16")
+    Cidr,
+    List(Box<TypeExpr>),
+    Map(Box<TypeExpr>),
+    /// Reference to a resource type (e.g., ref(aws.vpc))
+    Ref(ResourceTypePath),
+}
+
+impl std::fmt::Display for TypeExpr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TypeExpr::String => write!(f, "string"),
+            TypeExpr::Bool => write!(f, "bool"),
+            TypeExpr::Int => write!(f, "int"),
+            TypeExpr::Cidr => write!(f, "cidr"),
+            TypeExpr::List(inner) => write!(f, "list({})", inner),
+            TypeExpr::Map(inner) => write!(f, "map({})", inner),
+            TypeExpr::Ref(path) => write!(f, "ref({})", path),
+        }
+    }
+}
+
+/// Input parameter definition
+#[derive(Debug, Clone)]
+pub struct InputParameter {
+    pub name: String,
+    pub type_expr: TypeExpr,
+    pub default: Option<Value>,
+}
+
+/// Output parameter definition
+#[derive(Debug, Clone)]
+pub struct OutputParameter {
+    pub name: String,
+    pub type_expr: TypeExpr,
+    pub value: Option<Value>,
+}
+
+/// Import statement
+#[derive(Debug, Clone)]
+pub struct ImportStatement {
+    pub path: String,
+    pub alias: String,
+}
+
+/// Module call (instantiation)
+#[derive(Debug, Clone)]
+pub struct ModuleCall {
+    pub module_name: String,
+    pub binding_name: Option<String>,
+    pub arguments: HashMap<String, Value>,
 }
 
 /// Provider configuration
@@ -40,11 +142,19 @@ pub struct ProviderConfig {
 }
 
 /// Parse result
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ParsedFile {
     pub providers: Vec<ProviderConfig>,
     pub resources: Vec<Resource>,
     pub variables: HashMap<String, Value>,
+    /// Import statements
+    pub imports: Vec<ImportStatement>,
+    /// Module calls (instantiations)
+    pub module_calls: Vec<ModuleCall>,
+    /// Top-level input parameters (directory-based module style)
+    pub inputs: Vec<InputParameter>,
+    /// Top-level output parameters (directory-based module style)
+    pub outputs: Vec<OutputParameter>,
 }
 
 /// Parse context (variable scope)
@@ -52,6 +162,12 @@ struct ParseContext {
     variables: HashMap<String, Value>,
     /// Resource bindings (binding_name -> Resource)
     resource_bindings: HashMap<String, Resource>,
+    /// Imported modules (alias -> path)
+    imported_modules: HashMap<String, String>,
+    /// Whether we're inside a module (for input.* references)
+    in_module: bool,
+    /// Input parameter names when inside a module
+    input_params: HashMap<String, TypeExpr>,
 }
 
 impl ParseContext {
@@ -59,6 +175,9 @@ impl ParseContext {
         Self {
             variables: HashMap::new(),
             resource_bindings: HashMap::new(),
+            imported_modules: HashMap::new(),
+            in_module: false,
+            input_params: HashMap::new(),
         }
     }
 
@@ -86,6 +205,10 @@ pub fn parse(input: &str) -> Result<ParsedFile, ParseError> {
     let mut ctx = ParseContext::new();
     let mut providers = Vec::new();
     let mut resources = Vec::new();
+    let mut imports = Vec::new();
+    let mut module_calls = Vec::new();
+    let mut inputs = Vec::new();
+    let mut outputs = Vec::new();
 
     for pair in pairs {
         if pair.as_rule() == Rule::file {
@@ -93,17 +216,45 @@ pub fn parse(input: &str) -> Result<ParsedFile, ParseError> {
                 if inner.as_rule() == Rule::statement {
                     for stmt in inner.into_inner() {
                         match stmt.as_rule() {
+                            Rule::import_stmt => {
+                                let import = parse_import_stmt(stmt)?;
+                                ctx.imported_modules
+                                    .insert(import.alias.clone(), import.path.clone());
+                                imports.push(import);
+                            }
                             Rule::provider_block => {
                                 let provider = parse_provider_block(stmt, &ctx)?;
                                 providers.push(provider);
                             }
+                            Rule::input_block => {
+                                let parsed_inputs = parse_input_block(stmt)?;
+                                for input in &parsed_inputs {
+                                    ctx.input_params
+                                        .insert(input.name.clone(), input.type_expr.clone());
+                                }
+                                ctx.in_module = true;
+                                inputs.extend(parsed_inputs);
+                            }
+                            Rule::output_block => {
+                                let parsed_outputs = parse_output_block(stmt, &ctx)?;
+                                outputs.extend(parsed_outputs);
+                            }
                             Rule::let_binding => {
-                                let (name, value, maybe_resource) = parse_let_binding(stmt, &ctx)?;
+                                let (name, value, maybe_resource, maybe_module_call) =
+                                    parse_let_binding_extended(stmt, &ctx)?;
                                 ctx.set_variable(name.clone(), value);
                                 if let Some(resource) = maybe_resource {
                                     ctx.set_resource_binding(name.clone(), resource.clone());
                                     resources.push(resource);
                                 }
+                                if let Some(mut call) = maybe_module_call {
+                                    call.binding_name = Some(name);
+                                    module_calls.push(call);
+                                }
+                            }
+                            Rule::module_call => {
+                                let call = parse_module_call(stmt, &ctx)?;
+                                module_calls.push(call);
                             }
                             Rule::anonymous_resource => {
                                 let resource = parse_anonymous_resource(stmt, &ctx)?;
@@ -121,7 +272,204 @@ pub fn parse(input: &str) -> Result<ParsedFile, ParseError> {
         providers,
         resources,
         variables: ctx.variables,
+        imports,
+        module_calls,
+        inputs,
+        outputs,
     })
+}
+
+/// Parse input block
+fn parse_input_block(pair: pest::iterators::Pair<Rule>) -> Result<Vec<InputParameter>, ParseError> {
+    let mut inputs = Vec::new();
+    let ctx = ParseContext::new();
+
+    for param in pair.into_inner() {
+        if param.as_rule() == Rule::input_param {
+            let mut param_inner = param.into_inner();
+            let name = param_inner.next().unwrap().as_str().to_string();
+            let type_expr = parse_type_expr(param_inner.next().unwrap())?;
+            let default = if let Some(expr) = param_inner.next() {
+                Some(parse_expression(expr, &ctx)?)
+            } else {
+                None
+            };
+            inputs.push(InputParameter {
+                name,
+                type_expr,
+                default,
+            });
+        }
+    }
+
+    Ok(inputs)
+}
+
+/// Parse output block
+fn parse_output_block(
+    pair: pest::iterators::Pair<Rule>,
+    ctx: &ParseContext,
+) -> Result<Vec<OutputParameter>, ParseError> {
+    let mut outputs = Vec::new();
+
+    for param in pair.into_inner() {
+        if param.as_rule() == Rule::output_param {
+            let mut param_inner = param.into_inner();
+            let name = param_inner.next().unwrap().as_str().to_string();
+            let type_expr = parse_type_expr(param_inner.next().unwrap())?;
+            let value = if let Some(expr) = param_inner.next() {
+                Some(parse_expression(expr, ctx)?)
+            } else {
+                None
+            };
+            outputs.push(OutputParameter {
+                name,
+                type_expr,
+                value,
+            });
+        }
+    }
+
+    Ok(outputs)
+}
+
+/// Parse type expression
+fn parse_type_expr(pair: pest::iterators::Pair<Rule>) -> Result<TypeExpr, ParseError> {
+    let inner = pair.into_inner().next().unwrap();
+    match inner.as_rule() {
+        Rule::type_simple => match inner.as_str() {
+            "string" => Ok(TypeExpr::String),
+            "bool" => Ok(TypeExpr::Bool),
+            "int" => Ok(TypeExpr::Int),
+            "cidr" => Ok(TypeExpr::Cidr),
+            _ => Ok(TypeExpr::String), // Default fallback
+        },
+        Rule::type_generic => {
+            // Get the full string representation to determine if it's list or map
+            let full_str = inner.as_str();
+            let is_list = full_str.starts_with("list");
+
+            // Get the inner type expression
+            let mut generic_inner = inner.into_inner();
+            let inner_type = parse_type_expr(generic_inner.next().unwrap())?;
+
+            if is_list {
+                Ok(TypeExpr::List(Box::new(inner_type)))
+            } else {
+                Ok(TypeExpr::Map(Box::new(inner_type)))
+            }
+        }
+        Rule::type_ref => {
+            // Parse ref(resource_type_path)
+            let mut ref_inner = inner.into_inner();
+            let path_str = ref_inner.next().unwrap().as_str();
+            let path = ResourceTypePath::parse(path_str).ok_or_else(|| {
+                ParseError::InvalidResourceType(format!("Invalid resource type path: {}", path_str))
+            })?;
+            Ok(TypeExpr::Ref(path))
+        }
+        _ => Ok(TypeExpr::String),
+    }
+}
+
+/// Parse import statement
+fn parse_import_stmt(pair: pest::iterators::Pair<Rule>) -> Result<ImportStatement, ParseError> {
+    let mut inner = pair.into_inner();
+    let path = parse_string(inner.next().unwrap());
+    let alias = inner.next().unwrap().as_str().to_string();
+
+    Ok(ImportStatement { path, alias })
+}
+
+/// Parse module call
+fn parse_module_call(
+    pair: pest::iterators::Pair<Rule>,
+    ctx: &ParseContext,
+) -> Result<ModuleCall, ParseError> {
+    let mut inner = pair.into_inner();
+    let module_name = inner.next().unwrap().as_str().to_string();
+
+    let mut arguments = HashMap::new();
+    for arg in inner {
+        if arg.as_rule() == Rule::module_call_arg {
+            let mut arg_inner = arg.into_inner();
+            let key = arg_inner.next().unwrap().as_str().to_string();
+            let value = parse_expression(arg_inner.next().unwrap(), ctx)?;
+            arguments.insert(key, value);
+        }
+    }
+
+    Ok(ModuleCall {
+        module_name,
+        binding_name: None,
+        arguments,
+    })
+}
+
+/// Extended parse_let_binding that also handles module calls
+fn parse_let_binding_extended(
+    pair: pest::iterators::Pair<Rule>,
+    ctx: &ParseContext,
+) -> Result<(String, Value, Option<Resource>, Option<ModuleCall>), ParseError> {
+    let mut inner = pair.into_inner();
+    let name = inner.next().unwrap().as_str().to_string();
+    let expr_pair = inner.next().unwrap();
+
+    // Check if it's a module call or resource expression
+    let (value, maybe_resource, maybe_module_call) =
+        parse_expression_with_resource_or_module(expr_pair, ctx, &name)?;
+
+    Ok((name, value, maybe_resource, maybe_module_call))
+}
+
+/// Parse expression with potential resource or module call
+fn parse_expression_with_resource_or_module(
+    pair: pest::iterators::Pair<Rule>,
+    ctx: &ParseContext,
+    binding_name: &str,
+) -> Result<(Value, Option<Resource>, Option<ModuleCall>), ParseError> {
+    let inner = pair.into_inner().next().unwrap();
+    parse_pipe_expr_with_resource_or_module(inner, ctx, binding_name)
+}
+
+fn parse_pipe_expr_with_resource_or_module(
+    pair: pest::iterators::Pair<Rule>,
+    ctx: &ParseContext,
+    binding_name: &str,
+) -> Result<(Value, Option<Resource>, Option<ModuleCall>), ParseError> {
+    let mut inner = pair.into_inner();
+    let primary = inner.next().unwrap();
+    let (value, maybe_resource, maybe_module_call) =
+        parse_primary_with_resource_or_module(primary, ctx, binding_name)?;
+
+    // Pipe operator handling (for future extension)
+    for _func_call in inner {
+        // TODO: Implement pipe operator
+    }
+
+    Ok((value, maybe_resource, maybe_module_call))
+}
+
+fn parse_primary_with_resource_or_module(
+    pair: pest::iterators::Pair<Rule>,
+    ctx: &ParseContext,
+    binding_name: &str,
+) -> Result<(Value, Option<Resource>, Option<ModuleCall>), ParseError> {
+    let inner = pair.into_inner().next().unwrap();
+
+    match inner.as_rule() {
+        Rule::resource_expr => {
+            let resource = parse_resource_expr(inner, ctx, binding_name)?;
+            let ref_value = Value::String(format!("${{{}}}", binding_name));
+            Ok((ref_value, Some(resource), None))
+        }
+        _ => {
+            // Check if it could be a module call (identifier followed by braces)
+            // This is handled by checking if it's a simple identifier that matches a module
+            let value = parse_primary_value(inner, ctx)?;
+            Ok((value, None, None))
+        }
+    }
 }
 
 fn parse_provider_block(
@@ -142,67 +490,6 @@ fn parse_provider_block(
     }
 
     Ok(ProviderConfig { name, attributes })
-}
-
-fn parse_let_binding(
-    pair: pest::iterators::Pair<Rule>,
-    ctx: &ParseContext,
-) -> Result<(String, Value, Option<Resource>), ParseError> {
-    let mut inner = pair.into_inner();
-    let name = inner.next().unwrap().as_str().to_string();
-    let expr_pair = inner.next().unwrap();
-
-    // Check if it's a resource expression
-    let (value, maybe_resource) = parse_expression_with_resource(expr_pair, ctx, &name)?;
-
-    Ok((name, value, maybe_resource))
-}
-
-fn parse_expression_with_resource(
-    pair: pest::iterators::Pair<Rule>,
-    ctx: &ParseContext,
-    binding_name: &str,
-) -> Result<(Value, Option<Resource>), ParseError> {
-    let inner = pair.into_inner().next().unwrap();
-    parse_pipe_expr_with_resource(inner, ctx, binding_name)
-}
-
-fn parse_pipe_expr_with_resource(
-    pair: pest::iterators::Pair<Rule>,
-    ctx: &ParseContext,
-    binding_name: &str,
-) -> Result<(Value, Option<Resource>), ParseError> {
-    let mut inner = pair.into_inner();
-    let primary = inner.next().unwrap();
-    let (value, maybe_resource) = parse_primary_with_resource(primary, ctx, binding_name)?;
-
-    // Pipe operator handling (for future extension)
-    for _func_call in inner {
-        // TODO: Implement pipe operator
-    }
-
-    Ok((value, maybe_resource))
-}
-
-fn parse_primary_with_resource(
-    pair: pest::iterators::Pair<Rule>,
-    ctx: &ParseContext,
-    binding_name: &str,
-) -> Result<(Value, Option<Resource>), ParseError> {
-    let inner = pair.into_inner().next().unwrap();
-
-    match inner.as_rule() {
-        Rule::resource_expr => {
-            let resource = parse_resource_expr(inner, ctx, binding_name)?;
-            // Return reference to resource as a value
-            let ref_value = Value::String(format!("${{{}}}", binding_name));
-            Ok((ref_value, Some(resource)))
-        }
-        _ => {
-            let value = parse_primary_value(inner, ctx)?;
-            Ok((value, None))
-        }
-    }
 }
 
 fn parse_anonymous_resource(
@@ -431,12 +718,21 @@ fn parse_primary_value(
         Rule::namespaced_id => {
             // Namespaced identifier (e.g., aws.Region.ap_northeast_1)
             // or resource reference (e.g., bucket.name)
+            // or input reference in module context (e.g., input.vpc_id)
             let full_str = inner.as_str();
             let parts: Vec<&str> = full_str.split('.').collect();
 
             if parts.len() == 2 {
-                // Two-part identifier: could be resource reference or variable access
-                if ctx.get_variable(parts[0]).is_some() && !ctx.is_resource_binding(parts[0]) {
+                // Two-part identifier: could be input reference, resource reference or variable access
+                if parts[0] == "input" && ctx.in_module {
+                    // Input reference in module context (input.vpc_id)
+                    // Treat as a special ResourceRef with "input" as the binding name
+                    Ok(Value::ResourceRef(
+                        "input".to_string(),
+                        parts[1].to_string(),
+                    ))
+                } else if ctx.get_variable(parts[0]).is_some() && !ctx.is_resource_binding(parts[0])
+                {
                     // Variable exists but trying to access attribute on non-resource
                     Err(ParseError::InvalidExpression {
                         line: 0,
@@ -475,8 +771,16 @@ fn parse_primary_value(
             let first_ident = parts.next().unwrap().as_str();
 
             if let Some(second_part) = parts.next() {
-                // Member access: resource.attribute
+                // Member access: resource.attribute or input.param
                 let attr_name = second_part.as_str();
+
+                // Handle input reference in module context
+                if first_ident == "input" && ctx.in_module {
+                    return Ok(Value::ResourceRef(
+                        "input".to_string(),
+                        attr_name.to_string(),
+                    ));
+                }
 
                 // Return a ResourceRef that will be resolved/validated later
                 Ok(Value::ResourceRef(
@@ -560,6 +864,26 @@ fn resolve_value(
                 ))),
             }
         }
+        Value::TypedResourceRef {
+            binding_name,
+            attribute_name,
+            ..
+        } => match binding_map.get(binding_name) {
+            Some(attributes) => match attributes.get(attribute_name) {
+                Some(attr_value) => {
+                    // Recursively resolve in case the attribute itself is a reference
+                    resolve_value(attr_value, binding_map)
+                }
+                None => {
+                    // Attribute not found, keep as reference (might be resolved at runtime)
+                    Ok(value.clone())
+                }
+            },
+            None => Err(ParseError::UndefinedVariable(format!(
+                "{}.{}",
+                binding_name, attribute_name
+            ))),
+        },
         Value::List(items) => {
             let resolved: Result<Vec<Value>, ParseError> = items
                 .iter()
@@ -992,5 +1316,202 @@ mod tests {
         } else {
             panic!("Expected list for routes");
         }
+    }
+
+    #[test]
+    fn parse_directory_module() {
+        let input = r#"
+            input {
+                vpc_id: string
+                enable_https: bool = true
+            }
+
+            output {
+                sg_id: string = web_sg.id
+            }
+
+            let web_sg = aws.security_group {
+                name   = "web-sg"
+                vpc_id = input.vpc_id
+            }
+        "#;
+
+        let result = parse(input).unwrap();
+
+        // Check inputs
+        assert_eq!(result.inputs.len(), 2);
+        assert_eq!(result.inputs[0].name, "vpc_id");
+        assert_eq!(result.inputs[0].type_expr, TypeExpr::String);
+        assert!(result.inputs[0].default.is_none());
+
+        assert_eq!(result.inputs[1].name, "enable_https");
+        assert_eq!(result.inputs[1].type_expr, TypeExpr::Bool);
+        assert_eq!(result.inputs[1].default, Some(Value::Bool(true)));
+
+        // Check outputs
+        assert_eq!(result.outputs.len(), 1);
+        assert_eq!(result.outputs[0].name, "sg_id");
+        assert_eq!(result.outputs[0].type_expr, TypeExpr::String);
+
+        // Check resource has input reference
+        assert_eq!(result.resources.len(), 1);
+        let sg = &result.resources[0];
+        assert_eq!(
+            sg.attributes.get("vpc_id"),
+            Some(&Value::ResourceRef(
+                "input".to_string(),
+                "vpc_id".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn parse_import_statement() {
+        let input = r#"
+            import "./modules/web_tier.crn" as web_tier
+        "#;
+
+        let result = parse(input).unwrap();
+        assert_eq!(result.imports.len(), 1);
+        assert_eq!(result.imports[0].path, "./modules/web_tier.crn");
+        assert_eq!(result.imports[0].alias, "web_tier");
+    }
+
+    #[test]
+    fn parse_generic_type_expressions() {
+        let input = r#"
+            input {
+                ports: list(int)
+                tags: map(string)
+                cidrs: list(string)
+            }
+
+            output {
+                result: list(string)
+            }
+        "#;
+
+        let result = parse(input).unwrap();
+
+        assert_eq!(
+            result.inputs[0].type_expr,
+            TypeExpr::List(Box::new(TypeExpr::Int))
+        );
+        assert_eq!(
+            result.inputs[1].type_expr,
+            TypeExpr::Map(Box::new(TypeExpr::String))
+        );
+        assert_eq!(
+            result.inputs[2].type_expr,
+            TypeExpr::List(Box::new(TypeExpr::String))
+        );
+        assert_eq!(
+            result.outputs[0].type_expr,
+            TypeExpr::List(Box::new(TypeExpr::String))
+        );
+    }
+
+    #[test]
+    fn parse_ref_type_expression() {
+        let input = r#"
+            input {
+                vpc: ref(aws.vpc)
+                enable_https: bool = true
+            }
+
+            output {
+                security_group_id: ref(aws.security_group) = web_sg.id
+            }
+
+            let web_sg = aws.security_group {
+                name   = "web-sg"
+                vpc_id = input.vpc
+            }
+        "#;
+
+        let result = parse(input).unwrap();
+
+        // Check ref type input
+        assert_eq!(result.inputs[0].name, "vpc");
+        assert_eq!(
+            result.inputs[0].type_expr,
+            TypeExpr::Ref(ResourceTypePath::new("aws", "vpc"))
+        );
+        assert!(result.inputs[0].default.is_none());
+
+        // Check ref type output
+        assert_eq!(result.outputs[0].name, "security_group_id");
+        assert_eq!(
+            result.outputs[0].type_expr,
+            TypeExpr::Ref(ResourceTypePath::new("aws", "security_group"))
+        );
+    }
+
+    #[test]
+    fn parse_ref_type_with_nested_resource_type() {
+        let input = r#"
+            input {
+                sg: ref(aws.security_group)
+                rule: ref(aws.security_group.ingress_rule)
+            }
+
+            output {
+                out: string
+            }
+        "#;
+
+        let result = parse(input).unwrap();
+
+        // Single-level resource type
+        assert_eq!(
+            result.inputs[0].type_expr,
+            TypeExpr::Ref(ResourceTypePath::new("aws", "security_group"))
+        );
+
+        // Nested resource type (security_group.ingress_rule)
+        assert_eq!(
+            result.inputs[1].type_expr,
+            TypeExpr::Ref(ResourceTypePath::new("aws", "security_group.ingress_rule"))
+        );
+    }
+
+    #[test]
+    fn resource_type_path_parse() {
+        // Simple resource type
+        let path = ResourceTypePath::parse("aws.vpc").unwrap();
+        assert_eq!(path.provider, "aws");
+        assert_eq!(path.resource_type, "vpc");
+
+        // Nested resource type
+        let path2 = ResourceTypePath::parse("aws.security_group.ingress_rule").unwrap();
+        assert_eq!(path2.provider, "aws");
+        assert_eq!(path2.resource_type, "security_group.ingress_rule");
+
+        // Invalid (single component)
+        assert!(ResourceTypePath::parse("vpc").is_none());
+    }
+
+    #[test]
+    fn resource_type_path_display() {
+        let path = ResourceTypePath::new("aws", "vpc");
+        assert_eq!(path.to_string(), "aws.vpc");
+
+        let path2 = ResourceTypePath::new("aws", "security_group.ingress_rule");
+        assert_eq!(path2.to_string(), "aws.security_group.ingress_rule");
+    }
+
+    #[test]
+    fn type_expr_display_with_ref() {
+        assert_eq!(TypeExpr::String.to_string(), "string");
+        assert_eq!(TypeExpr::Bool.to_string(), "bool");
+        assert_eq!(TypeExpr::Int.to_string(), "int");
+        assert_eq!(
+            TypeExpr::List(Box::new(TypeExpr::String)).to_string(),
+            "list(string)"
+        );
+        assert_eq!(
+            TypeExpr::Ref(ResourceTypePath::new("aws", "vpc")).to_string(),
+            "ref(aws.vpc)"
+        );
     }
 }
