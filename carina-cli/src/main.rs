@@ -48,6 +48,16 @@ enum Commands {
         #[arg(default_value = "main.crn")]
         file: PathBuf,
     },
+    /// Destroy all resources defined in the configuration file
+    Destroy {
+        /// Path to .crn file
+        #[arg(default_value = "main.crn")]
+        file: PathBuf,
+
+        /// Skip confirmation prompt (auto-approve)
+        #[arg(long)]
+        auto_approve: bool,
+    },
     /// Format .crn files
     Fmt {
         /// Path to .crn file or directory
@@ -90,6 +100,7 @@ async fn main() {
         Commands::Validate { file } => run_validate(&file),
         Commands::Plan { file } => run_plan(&file).await,
         Commands::Apply { file } => run_apply(&file).await,
+        Commands::Destroy { file, auto_approve } => run_destroy(&file, auto_approve).await,
         Commands::Fmt {
             path,
             check,
@@ -509,6 +520,198 @@ async fn run_apply(file: &PathBuf) -> Result<(), String> {
             "{}",
             format!(
                 "Apply failed. {} succeeded, {} failed.",
+                success_count, failure_count
+            )
+            .red()
+            .bold()
+        );
+    }
+
+    Ok(())
+}
+
+async fn run_destroy(file: &PathBuf, auto_approve: bool) -> Result<(), String> {
+    let content = fs::read_to_string(file)
+        .map_err(|e| format!("Failed to read {}: {}", file.display(), e))?;
+
+    let mut parsed =
+        parser::parse_and_resolve(&content).map_err(|e| format!("Parse error: {}", e))?;
+
+    // Resolve module imports and expand module calls
+    let base_dir = file.parent().unwrap_or(Path::new("."));
+    module_resolver::resolve_modules(&mut parsed, base_dir)
+        .map_err(|e| format!("Module resolution error: {}", e))?;
+
+    // Apply default region from provider
+    apply_default_region(&mut parsed);
+
+    if parsed.resources.is_empty() {
+        println!("{}", "No resources defined in configuration.".yellow());
+        return Ok(());
+    }
+
+    // Sort resources by dependencies (for creation order)
+    let sorted_resources = sort_resources_by_dependencies(&parsed.resources);
+
+    // Reverse the order for destruction (dependents first, then dependencies)
+    let destroy_order: Vec<Resource> = sorted_resources.into_iter().rev().collect();
+
+    // Select appropriate Provider based on configuration
+    let provider: Box<dyn Provider> = get_provider(&parsed).await;
+
+    // Get AWS provider for route-specific reads
+    let region = get_aws_region(&parsed);
+    let aws_provider = AwsProvider::new(&region).await;
+
+    // Build binding map for reference resolution (needed for route reads)
+    let mut binding_map: HashMap<String, HashMap<String, Value>> = HashMap::new();
+
+    // First pass: read states for non-route resources
+    let mut current_states: HashMap<ResourceId, State> = HashMap::new();
+    for resource in &destroy_order {
+        if resource.id.resource_type != "route" {
+            let state = provider
+                .read(&resource.id)
+                .await
+                .map_err(|e| format!("Failed to read state: {}", e))?;
+
+            // Update binding map with state
+            if let Some(Value::String(binding_name)) = resource.attributes.get("_binding") {
+                let mut attrs = resource.attributes.clone();
+                if state.exists {
+                    for (k, v) in &state.attributes {
+                        if !attrs.contains_key(k) {
+                            attrs.insert(k.clone(), v.clone());
+                        }
+                    }
+                }
+                binding_map.insert(binding_name.clone(), attrs);
+            }
+
+            current_states.insert(resource.id.clone(), state);
+        }
+    }
+
+    // Second pass: read states for route resources (need resolved route_table_id)
+    for resource in &destroy_order {
+        if resource.id.resource_type == "route" {
+            // Resolve route_table_id and destination_cidr_block
+            let route_table_id = match resource.attributes.get("route_table_id") {
+                Some(value) => {
+                    let resolved = resolve_ref_value(value, &binding_map);
+                    match resolved {
+                        Value::String(s) => s,
+                        _ => continue,
+                    }
+                }
+                None => continue,
+            };
+
+            let destination_cidr = match resource.attributes.get("destination_cidr_block") {
+                Some(Value::String(s)) => s.clone(),
+                _ => continue,
+            };
+
+            let state = aws_provider
+                .read_ec2_route_by_key(&resource.id.name, &route_table_id, &destination_cidr)
+                .await
+                .map_err(|e| format!("Failed to read route state: {}", e))?;
+            current_states.insert(resource.id.clone(), state);
+        }
+    }
+
+    // Collect resources that exist and will be destroyed
+    let resources_to_destroy: Vec<&Resource> = destroy_order
+        .iter()
+        .filter(|r| current_states.get(&r.id).map(|s| s.exists).unwrap_or(false))
+        .collect();
+
+    if resources_to_destroy.is_empty() {
+        println!("{}", "No resources to destroy.".green());
+        return Ok(());
+    }
+
+    // Display destroy plan
+    println!("{}", "Destroy Plan:".red().bold());
+    println!();
+
+    for resource in &resources_to_destroy {
+        println!(
+            "  {} {}.{}",
+            "-".red().bold(),
+            resource.id.resource_type,
+            resource.id.name
+        );
+    }
+
+    println!();
+    println!(
+        "Plan: {} to destroy.",
+        resources_to_destroy.len().to_string().red()
+    );
+    println!();
+
+    // Confirmation prompt
+    if !auto_approve {
+        println!(
+            "{}",
+            "Do you really want to destroy all resources?"
+                .yellow()
+                .bold()
+        );
+        println!(
+            "  {}",
+            "This action cannot be undone. Type 'yes' to confirm.".yellow()
+        );
+        print!("\n  Enter a value: ");
+        std::io::Write::flush(&mut std::io::stdout()).map_err(|e| e.to_string())?;
+
+        let mut input = String::new();
+        std::io::stdin()
+            .read_line(&mut input)
+            .map_err(|e| e.to_string())?;
+
+        if input.trim() != "yes" {
+            println!();
+            println!("{}", "Destroy cancelled.".yellow());
+            return Ok(());
+        }
+        println!();
+    }
+
+    println!("{}", "Destroying resources...".red().bold());
+    println!();
+
+    let mut success_count = 0;
+    let mut failure_count = 0;
+
+    for resource in resources_to_destroy {
+        let effect = Effect::Delete(resource.id.clone());
+        match provider.delete(&resource.id).await {
+            Ok(()) => {
+                println!("  {} {}", "✓".green(), format_effect(&effect));
+                success_count += 1;
+            }
+            Err(e) => {
+                println!("  {} {} - {}", "✗".red(), format_effect(&effect), e);
+                failure_count += 1;
+            }
+        }
+    }
+
+    println!();
+    if failure_count == 0 {
+        println!(
+            "{}",
+            format!("Destroy complete! {} resources destroyed.", success_count)
+                .green()
+                .bold()
+        );
+    } else {
+        println!(
+            "{}",
+            format!(
+                "Destroy failed. {} succeeded, {} failed.",
                 success_count, failure_count
             )
             .red()
