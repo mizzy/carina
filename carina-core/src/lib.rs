@@ -6,6 +6,8 @@ pub mod differ;
 pub mod effect;
 pub mod formatter;
 pub mod interpreter;
+pub mod module;
+pub mod module_resolver;
 pub mod parser;
 pub mod plan;
 pub mod provider;

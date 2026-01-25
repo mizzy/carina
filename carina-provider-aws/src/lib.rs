@@ -1558,12 +1558,12 @@ impl AwsProvider {
 
     // ========== EC2 Security Group Rule Operations ==========
 
-    /// Find Security Group Rule by Name tag
-    async fn find_security_group_rule_by_name(
+    /// Find all Security Group Rules by Name tag (returns all rules with the same name)
+    async fn find_security_group_rules_by_name(
         &self,
         name: &str,
         is_ingress: bool,
-    ) -> ProviderResult<Option<aws_sdk_ec2::types::SecurityGroupRule>> {
+    ) -> ProviderResult<Vec<aws_sdk_ec2::types::SecurityGroupRule>> {
         use aws_sdk_ec2::types::Filter;
 
         let filter = Filter::builder().name("tag:Name").values(name).build();
@@ -1578,14 +1578,15 @@ impl AwsProvider {
                 ProviderError::new(format!("Failed to describe security group rules: {:?}", e))
             })?;
 
-        // Filter by ingress/egress
-        for rule in result.security_group_rules() {
-            if rule.is_egress() == Some(!is_ingress) {
-                return Ok(Some(rule.clone()));
-            }
-        }
+        // Filter by ingress/egress and collect all matching rules
+        let rules: Vec<_> = result
+            .security_group_rules()
+            .iter()
+            .filter(|rule| rule.is_egress() == Some(!is_ingress))
+            .cloned()
+            .collect();
 
-        Ok(None)
+        Ok(rules)
     }
 
     /// Read an EC2 Security Group Rule
@@ -1601,55 +1602,62 @@ impl AwsProvider {
         };
         let id = ResourceId::new(resource_type, name);
 
-        let rule = self
-            .find_security_group_rule_by_name(name, is_ingress)
+        let rules = self
+            .find_security_group_rules_by_name(name, is_ingress)
             .await?;
 
-        if let Some(rule) = rule {
-            let mut attributes = HashMap::new();
-            attributes.insert("name".to_string(), Value::String(name.to_string()));
-
-            let region_dsl = format!("aws.Region.{}", self.region.replace('-', "_"));
-            attributes.insert("region".to_string(), Value::String(region_dsl));
-
-            // Store rule ID
-            if let Some(rule_id) = rule.security_group_rule_id() {
-                attributes.insert("id".to_string(), Value::String(rule_id.to_string()));
-            }
-
-            // Store security group ID
-            if let Some(sg_id) = rule.group_id() {
-                attributes.insert(
-                    "security_group_id".to_string(),
-                    Value::String(sg_id.to_string()),
-                );
-            }
-
-            if let Some(protocol) = rule.ip_protocol() {
-                // Convert AWS protocol format to DSL format
-                let protocol_dsl = match protocol {
-                    "-1" => "aws.Protocol.all".to_string(),
-                    p => format!("aws.Protocol.{}", p),
-                };
-                attributes.insert("protocol".to_string(), Value::String(protocol_dsl));
-            }
-
-            if let Some(from_port) = rule.from_port() {
-                attributes.insert("from_port".to_string(), Value::Int(from_port as i64));
-            }
-
-            if let Some(to_port) = rule.to_port() {
-                attributes.insert("to_port".to_string(), Value::Int(to_port as i64));
-            }
-
-            if let Some(cidr) = rule.cidr_ipv4() {
-                attributes.insert("cidr".to_string(), Value::String(cidr.to_string()));
-            }
-
-            Ok(State::existing(id, attributes))
-        } else {
-            Ok(State::not_found(id))
+        if rules.is_empty() {
+            return Ok(State::not_found(id));
         }
+
+        // Use the first rule for common attributes
+        let first_rule = &rules[0];
+        let mut attributes = HashMap::new();
+        attributes.insert("name".to_string(), Value::String(name.to_string()));
+
+        let region_dsl = format!("aws.Region.{}", self.region.replace('-', "_"));
+        attributes.insert("region".to_string(), Value::String(region_dsl));
+
+        // Store rule IDs (comma-separated if multiple)
+        let rule_ids: Vec<String> = rules
+            .iter()
+            .filter_map(|r| r.security_group_rule_id().map(String::from))
+            .collect();
+        if !rule_ids.is_empty() {
+            attributes.insert("id".to_string(), Value::String(rule_ids.join(",")));
+        }
+
+        // Store security group ID
+        if let Some(sg_id) = first_rule.group_id() {
+            attributes.insert(
+                "security_group_id".to_string(),
+                Value::String(sg_id.to_string()),
+            );
+        }
+
+        if let Some(protocol) = first_rule.ip_protocol() {
+            // Keep protocol as raw string for comparison (tcp, udp, icmp, -1)
+            attributes.insert("protocol".to_string(), Value::String(protocol.to_string()));
+        }
+
+        if let Some(from_port) = first_rule.from_port() {
+            attributes.insert("from_port".to_string(), Value::Int(from_port as i64));
+        }
+
+        if let Some(to_port) = first_rule.to_port() {
+            attributes.insert("to_port".to_string(), Value::Int(to_port as i64));
+        }
+
+        // Aggregate cidr_blocks from all rules with the same name
+        let cidr_blocks: Vec<Value> = rules
+            .iter()
+            .filter_map(|r| r.cidr_ipv4().map(|c| Value::String(c.to_string())))
+            .collect();
+        if !cidr_blocks.is_empty() {
+            attributes.insert("cidr_blocks".to_string(), Value::List(cidr_blocks));
+        }
+
+        Ok(State::existing(id, attributes))
     }
 
     /// Create an EC2 Security Group Rule
@@ -1690,23 +1698,34 @@ impl AwsProvider {
             _ => 0,
         };
 
-        let cidr = match resource.attributes.get("cidr") {
-            Some(Value::String(s)) => s.clone(),
-            _ => "0.0.0.0/0".to_string(),
+        // Support both cidr_blocks (list) and cidr (single value) for backwards compatibility
+        let cidrs: Vec<String> = match resource.attributes.get("cidr_blocks") {
+            Some(Value::List(items)) => items
+                .iter()
+                .filter_map(|v| match v {
+                    Value::String(s) => Some(s.clone()),
+                    _ => None,
+                })
+                .collect(),
+            _ => match resource.attributes.get("cidr") {
+                Some(Value::String(s)) => vec![s.clone()],
+                _ => vec!["0.0.0.0/0".to_string()],
+            },
         };
 
-        let permission = aws_sdk_ec2::types::IpPermission::builder()
+        let mut permission_builder = aws_sdk_ec2::types::IpPermission::builder()
             .ip_protocol(&protocol)
             .from_port(from_port)
-            .to_port(to_port)
-            .ip_ranges(
-                aws_sdk_ec2::types::IpRange::builder()
-                    .cidr_ip(&cidr)
-                    .build(),
-            )
-            .build();
+            .to_port(to_port);
 
-        let rule_id = if is_ingress {
+        for cidr in &cidrs {
+            permission_builder = permission_builder
+                .ip_ranges(aws_sdk_ec2::types::IpRange::builder().cidr_ip(cidr).build());
+        }
+
+        let permission = permission_builder.build();
+
+        let rule_ids: Vec<String> = if is_ingress {
             let result = self
                 .ec2_client
                 .authorize_security_group_ingress()
@@ -1721,9 +1740,9 @@ impl AwsProvider {
 
             result
                 .security_group_rules()
-                .first()
-                .and_then(|r| r.security_group_rule_id())
-                .map(String::from)
+                .iter()
+                .filter_map(|r| r.security_group_rule_id().map(String::from))
+                .collect()
         } else {
             let result = self
                 .ec2_client
@@ -1739,16 +1758,18 @@ impl AwsProvider {
 
             result
                 .security_group_rules()
-                .first()
-                .and_then(|r| r.security_group_rule_id())
-                .map(String::from)
+                .iter()
+                .filter_map(|r| r.security_group_rule_id().map(String::from))
+                .collect()
         };
 
-        // Tag the rule with Name
-        if let Some(rule_id) = rule_id {
-            self.ec2_client
-                .create_tags()
-                .resources(&rule_id)
+        // Tag ALL rules with the same Name
+        if !rule_ids.is_empty() {
+            let mut tag_request = self.ec2_client.create_tags();
+            for rule_id in &rule_ids {
+                tag_request = tag_request.resources(rule_id);
+            }
+            tag_request
                 .tags(
                     aws_sdk_ec2::types::Tag::builder()
                         .key("Name")
@@ -1758,7 +1779,7 @@ impl AwsProvider {
                 .send()
                 .await
                 .map_err(|e| {
-                    ProviderError::new(format!("Failed to tag security group rule: {:?}", e))
+                    ProviderError::new(format!("Failed to tag security group rules: {:?}", e))
                         .for_resource(resource.id.clone())
                 })?;
         }
@@ -1770,57 +1791,66 @@ impl AwsProvider {
     async fn update_ec2_security_group_rule(
         &self,
         id: ResourceId,
-        _to: Resource,
+        to: Resource,
         is_ingress: bool,
     ) -> ProviderResult<State> {
-        // Security group rules are immutable - changes require delete and recreate
-        self.read_ec2_security_group_rule(&id.name, is_ingress)
-            .await
+        // Security group rules are immutable - delete and recreate
+        self.delete_ec2_security_group_rule(id.clone(), is_ingress)
+            .await?;
+        self.create_ec2_security_group_rule(to, is_ingress).await
     }
 
-    /// Delete an EC2 Security Group Rule
+    /// Delete an EC2 Security Group Rule (deletes all rules with the same name tag)
     async fn delete_ec2_security_group_rule(
         &self,
         id: ResourceId,
         is_ingress: bool,
     ) -> ProviderResult<()> {
-        let rule = self
-            .find_security_group_rule_by_name(&id.name, is_ingress)
-            .await?
-            .ok_or_else(|| {
+        let rules = self
+            .find_security_group_rules_by_name(&id.name, is_ingress)
+            .await?;
+
+        if rules.is_empty() {
+            return Err(
                 ProviderError::new("Security Group Rule not found").for_resource(id.clone())
-            })?;
+            );
+        }
 
-        let rule_id = rule
-            .security_group_rule_id()
-            .ok_or_else(|| ProviderError::new("Rule has no ID").for_resource(id.clone()))?;
+        // Collect all rule IDs and the security group ID
+        let rule_ids: Vec<String> = rules
+            .iter()
+            .filter_map(|r| r.security_group_rule_id().map(String::from))
+            .collect();
 
-        let sg_id = rule.group_id().ok_or_else(|| {
+        let sg_id = rules[0].group_id().ok_or_else(|| {
             ProviderError::new("Rule has no security group ID").for_resource(id.clone())
         })?;
 
+        // Delete all rules at once
         if is_ingress {
-            self.ec2_client
+            let mut request = self
+                .ec2_client
                 .revoke_security_group_ingress()
-                .group_id(sg_id)
-                .security_group_rule_ids(rule_id)
-                .send()
-                .await
-                .map_err(|e| {
-                    ProviderError::new(format!("Failed to delete ingress rule: {:?}", e))
-                        .for_resource(id.clone())
-                })?;
+                .group_id(sg_id);
+            for rule_id in &rule_ids {
+                request = request.security_group_rule_ids(rule_id);
+            }
+            request.send().await.map_err(|e| {
+                ProviderError::new(format!("Failed to delete ingress rules: {:?}", e))
+                    .for_resource(id.clone())
+            })?;
         } else {
-            self.ec2_client
+            let mut request = self
+                .ec2_client
                 .revoke_security_group_egress()
-                .group_id(sg_id)
-                .security_group_rule_ids(rule_id)
-                .send()
-                .await
-                .map_err(|e| {
-                    ProviderError::new(format!("Failed to delete egress rule: {:?}", e))
-                        .for_resource(id.clone())
-                })?;
+                .group_id(sg_id);
+            for rule_id in &rule_ids {
+                request = request.security_group_rule_ids(rule_id);
+            }
+            request.send().await.map_err(|e| {
+                ProviderError::new(format!("Failed to delete egress rules: {:?}", e))
+                    .for_resource(id.clone())
+            })?;
         }
 
         Ok(())

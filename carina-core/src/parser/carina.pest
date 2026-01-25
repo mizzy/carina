@@ -3,7 +3,47 @@
 // Entry point
 file = { SOI ~ statement* ~ EOI }
 
-statement = { provider_block | let_binding | anonymous_resource }
+statement = { import_stmt | provider_block | input_block | output_block | let_binding | module_call | anonymous_resource }
+
+// Input block: input { vpc_id: string, ... }
+input_block = {
+    "input" ~ "{" ~ input_param* ~ "}"
+}
+
+// Input parameter: name: type or name: type = default
+input_param = {
+    identifier ~ ":" ~ type_expr ~ ("=" ~ expression)?
+}
+
+// Output block: output { subnet_ids: list(string), ... }
+output_block = {
+    "output" ~ "{" ~ output_param* ~ "}"
+}
+
+// Output parameter: name: type or name: type = expression
+output_param = {
+    identifier ~ ":" ~ type_expr ~ ("=" ~ expression)?
+}
+
+// Type expression: string, bool, int, list(type), map(type), ref(resource_type)
+type_expr = { type_ref | type_generic | type_simple }
+type_simple = @{ "string" | "bool" | "int" | "cidr" }
+type_generic = { ("list" | "map") ~ "(" ~ type_expr ~ ")" }
+type_ref = { "ref" ~ "(" ~ resource_type_path ~ ")" }
+resource_type_path = @{ identifier ~ ("." ~ identifier)+ }
+
+// Import statement: import "./path/to/module.crn" as name
+import_stmt = {
+    "import" ~ string ~ "as" ~ identifier
+}
+
+// Module call: module_name { key = value, ... }
+module_call = {
+    identifier ~ "{" ~ module_call_arg* ~ "}"
+}
+
+// Module call argument: key = value
+module_call_arg = { identifier ~ "=" ~ expression }
 
 // Anonymous resource: aws.s3.bucket { ... } (top-level)
 anonymous_resource = { namespaced_id ~ "{" ~ block_content* ~ "}" }

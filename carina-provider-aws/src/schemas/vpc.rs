@@ -353,7 +353,8 @@ pub fn security_group_ingress_rule_schema() -> ResourceSchema {
                 .with_description("End of port range"),
         )
         .attribute(
-            AttributeSchema::new("cidr", cidr_block()).with_description("CIDR block to allow"),
+            AttributeSchema::new("cidr_blocks", AttributeType::List(Box::new(types::cidr())))
+                .with_description("List of CIDR blocks to allow"),
         )
 }
 
@@ -395,7 +396,8 @@ pub fn security_group_egress_rule_schema() -> ResourceSchema {
                 .with_description("End of port range"),
         )
         .attribute(
-            AttributeSchema::new("cidr", cidr_block()).with_description("CIDR block to allow"),
+            AttributeSchema::new("cidr_blocks", AttributeType::List(Box::new(types::cidr())))
+                .with_description("List of CIDR blocks to allow"),
         )
 }
 
