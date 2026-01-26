@@ -11,7 +11,8 @@ A functional infrastructure management tool written in Rust. Carina treats infra
 - **Effects as Values**: Side effects are represented as data structures, not immediately executed
 - **Strong Typing**: Catch configuration errors at parse time with schema validation
 - **Provider Architecture**: Extensible provider system for multi-cloud support
-- **Terraform-like Workflow**: Familiar `validate`, `plan`, `apply` commands
+- **Modules**: Reusable infrastructure components with typed inputs/outputs
+- **Terraform-like Workflow**: Familiar `validate`, `plan`, `apply`, `destroy` commands
 
 ## Installation
 
@@ -66,16 +67,30 @@ $ carina plan example.crn
 Using AWS provider (region: ap-northeast-1)
 Execution Plan:
 
-  + s3_bucket.my-app-logs
+  + s3_bucket
       name: "my-app-logs"
       expiration_days: 90
-      region: "aws.Region.ap_northeast_1"
+      region: "ap-northeast-1"
       versioning: true
-  + s3_bucket.my-app-backup
+  + s3_bucket
       name: "my-app-backup"
-      region: "aws.Region.ap_northeast_1"
+      region: "ap-northeast-1"
 
 Plan: 2 to add, 0 to change, 0 to destroy.
+```
+
+Resources with dependencies are displayed as a tree:
+
+```
+  + vpc
+      name: "main-vpc"
+      cidr_block: "10.0.0.0/16"
+      └─ + subnet
+           name: "public-subnet"
+           vpc_id: "vpc-xxx"
+           └─ + security_group
+                name: "web-sg"
+                vpc_id: "vpc-xxx"
 ```
 
 ### 4. Apply
@@ -122,14 +137,65 @@ let logs = aws.s3.bucket {
 }
 ```
 
-### Supported Attributes for S3 Bucket
+### Modules
 
-| Attribute | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `name` | string | Yes | Bucket name (must be globally unique) |
-| `region` | enum | Yes | AWS region (e.g., `aws.Region.ap_northeast_1`) |
-| `versioning` | bool | No | Enable versioning |
-| `expiration_days` | int | No | Auto-delete objects after N days |
+Modules enable reusable infrastructure components with typed inputs and outputs.
+
+**Module definition** (`modules/web_tier/main.crn`):
+
+```
+input {
+    vpc: ref(aws.vpc)
+    cidr_blocks: list(cidr)
+    enable_https: bool = true
+}
+
+output {
+    security_group: ref(aws.security_group) = web_sg.id
+}
+
+let web_sg = aws.security_group {
+    name        = "web-sg"
+    vpc_id      = input.vpc
+    description = "Security group for web servers"
+}
+```
+
+**Using modules**:
+
+```
+import "./modules/web_tier" as web_tier
+
+let main_vpc = aws.vpc {
+    name       = "main-vpc"
+    cidr_block = "10.0.0.0/16"
+}
+
+web_tier {
+    vpc         = main_vpc.id
+    cidr_blocks = ["10.0.1.0/24", "10.0.2.0/25"]
+}
+```
+
+**Inspect module structure**:
+
+```bash
+$ carina module info modules/web_tier
+module web_tier
+
+inputs:
+  vpc: ref(aws.vpc)
+  cidr_blocks: list(cidr)
+  enable_https: bool = true
+
+outputs:
+  security_group: ref(aws.security_group) = web_sg.id
+
+resources:
+  security_group (let web_sg)
+  security_group.ingress_rule
+  security_group.ingress_rule
+```
 
 ## Architecture
 
@@ -207,6 +273,65 @@ The AWS provider requires valid AWS credentials. Configure via:
 aws-vault exec myprofile -- carina apply example.crn
 ```
 
+## Commands
+
+### Format
+
+Format `.crn` files:
+
+```bash
+# Format a single file
+$ carina fmt example.crn
+
+# Format all .crn files in current directory
+$ carina fmt
+
+# Format recursively
+$ carina fmt -r
+
+# Check formatting without modifying files
+$ carina fmt --check
+
+# Show diff of formatting changes
+$ carina fmt --diff
+```
+
+### Destroy
+
+Remove all resources defined in a configuration:
+
+```bash
+$ carina destroy example.crn
+Destroy Plan:
+
+  - s3_bucket.my-app-logs
+  - s3_bucket.my-app-backup
+
+Plan: 2 to destroy.
+
+Do you really want to destroy all resources?
+  This action cannot be undone. Type 'yes' to confirm.
+
+  Enter a value: yes
+
+Destroying resources...
+
+  ✓ Delete s3_bucket.my-app-logs
+  ✓ Delete s3_bucket.my-app-backup
+
+Destroy complete! 2 resources destroyed.
+```
+
+Use `--auto-approve` to skip the confirmation prompt.
+
+### Module Info
+
+Inspect module structure and dependencies:
+
+```bash
+$ carina module info modules/web_tier
+```
+
 ## Development
 
 ### Run tests
@@ -227,10 +352,10 @@ MIT
 
 ## Roadmap
 
+- [x] Resource dependencies and references
+- [x] Modules and reusability
+- [x] Destroy command
 - [ ] More AWS resources (EC2, IAM, Lambda, etc.)
 - [ ] GCP provider
 - [ ] State file management
-- [ ] Resource dependencies and references
-- [ ] Modules and reusability
-- [ ] Destroy command
 - [ ] Import existing resources
