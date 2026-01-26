@@ -6,7 +6,7 @@ use crate::document::Document;
 use carina_core::parser::{InputParameter, ParseError, ParsedFile, TypeExpr};
 use carina_core::resource::Value;
 use carina_core::schema::validate_cidr;
-use carina_provider_aws::schemas::{s3, vpc};
+use carina_provider_aws::schemas::{s3, types as aws_types, vpc};
 
 pub struct DiagnosticEngine {
     valid_resource_types: HashSet<String>,
@@ -51,6 +51,9 @@ impl DiagnosticEngine {
 
         // Semantic analysis on parsed file
         if let Some(parsed) = doc.parsed() {
+            // Check provider region
+            diagnostics.extend(self.check_provider_region(doc, parsed));
+
             // Check module calls
             if let Some(base) = base_path {
                 diagnostics.extend(self.check_module_calls(doc, parsed, base));
@@ -255,6 +258,63 @@ impl DiagnosticEngine {
             // Calculate column position (account for leading whitespace)
             let leading_ws = line.len() - trimmed.len();
             return Some((line_idx as u32, leading_ws as u32));
+        }
+        None
+    }
+
+    /// Check provider region attribute
+    fn check_provider_region(&self, doc: &Document, parsed: &ParsedFile) -> Vec<Diagnostic> {
+        let mut diagnostics = Vec::new();
+        let region_type = aws_types::aws_region();
+
+        for provider in &parsed.providers {
+            if provider.name == "aws"
+                && let Some(region_value) = provider.attributes.get("region")
+                && let Err(e) = region_type.validate(region_value)
+                && let Some((line, col)) = self.find_provider_region_position(doc)
+            {
+                diagnostics.push(Diagnostic {
+                    range: Range {
+                        start: Position {
+                            line,
+                            character: col,
+                        },
+                        end: Position {
+                            line,
+                            character: col + 6, // "region"
+                        },
+                    },
+                    severity: Some(DiagnosticSeverity::WARNING),
+                    source: Some("carina".to_string()),
+                    message: format!("provider aws: {}", e),
+                    ..Default::default()
+                });
+            }
+        }
+        diagnostics
+    }
+
+    /// Find the position of the region attribute in a provider aws block
+    fn find_provider_region_position(&self, doc: &Document) -> Option<(u32, u32)> {
+        let text = doc.text();
+        let mut in_provider_aws = false;
+
+        for (line_idx, line) in text.lines().enumerate() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("provider aws") {
+                in_provider_aws = true;
+            }
+
+            if in_provider_aws {
+                if trimmed.starts_with("region") {
+                    let leading_ws = line.len() - trimmed.len();
+                    return Some((line_idx as u32, leading_ws as u32));
+                }
+
+                if trimmed == "}" {
+                    in_provider_aws = false;
+                }
+            }
         }
         None
     }

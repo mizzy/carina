@@ -249,6 +249,21 @@ fn derive_module_name(path: &Path) -> String {
     file_stem.to_string()
 }
 
+/// Validate provider region attribute
+fn validate_provider_region(parsed: &ParsedFile) -> Result<(), String> {
+    let region_type = carina_provider_aws::schemas::types::aws_region();
+
+    for provider in &parsed.providers {
+        if provider.name == "aws"
+            && let Some(region_value) = provider.attributes.get("region")
+            && let Err(e) = region_type.validate(region_value)
+        {
+            return Err(format!("provider aws: {}", e));
+        }
+    }
+    Ok(())
+}
+
 fn run_validate(file: &PathBuf) -> Result<(), String> {
     let content = fs::read_to_string(file)
         .map_err(|e| format!("Failed to read {}: {}", file.display(), e))?;
@@ -260,6 +275,9 @@ fn run_validate(file: &PathBuf) -> Result<(), String> {
     let base_dir = file.parent().unwrap_or(Path::new("."));
     module_resolver::resolve_modules(&mut parsed, base_dir)
         .map_err(|e| format!("Module resolution error: {}", e))?;
+
+    // Validate provider region
+    validate_provider_region(&parsed)?;
 
     // Apply default region from provider
     apply_default_region(&mut parsed);
@@ -297,6 +315,9 @@ async fn run_plan(file: &PathBuf) -> Result<(), String> {
     module_resolver::resolve_modules(&mut parsed, base_dir)
         .map_err(|e| format!("Module resolution error: {}", e))?;
 
+    // Validate provider region
+    validate_provider_region(&parsed)?;
+
     // Apply default region from provider
     apply_default_region(&mut parsed);
 
@@ -318,6 +339,9 @@ async fn run_apply(file: &PathBuf) -> Result<(), String> {
     let base_dir = file.parent().unwrap_or(Path::new("."));
     module_resolver::resolve_modules(&mut parsed, base_dir)
         .map_err(|e| format!("Module resolution error: {}", e))?;
+
+    // Validate provider region
+    validate_provider_region(&parsed)?;
 
     // Apply default region from provider
     apply_default_region(&mut parsed);
@@ -541,6 +565,9 @@ async fn run_destroy(file: &PathBuf, auto_approve: bool) -> Result<(), String> {
     let base_dir = file.parent().unwrap_or(Path::new("."));
     module_resolver::resolve_modules(&mut parsed, base_dir)
         .map_err(|e| format!("Module resolution error: {}", e))?;
+
+    // Validate provider region
+    validate_provider_region(&parsed)?;
 
     // Apply default region from provider
     apply_default_region(&mut parsed);

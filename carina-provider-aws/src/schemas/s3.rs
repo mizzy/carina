@@ -2,6 +2,8 @@
 
 use carina_core::schema::{AttributeSchema, AttributeType, ResourceSchema, types};
 
+use super::types as aws_types;
+
 /// Returns the schema for S3 buckets
 pub fn bucket_schema() -> ResourceSchema {
     ResourceSchema::new("s3.bucket")
@@ -11,7 +13,7 @@ pub fn bucket_schema() -> ResourceSchema {
                 .with_description("Override bucket name (defaults to resource name)"),
         )
         .attribute(
-            AttributeSchema::new("region", types::aws_region()).with_description(
+            AttributeSchema::new("region", aws_types::aws_region()).with_description(
                 "The AWS region for the bucket (inherited from provider if not specified)",
             ),
         )
