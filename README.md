@@ -64,7 +64,6 @@ Validating...
 
 ```bash
 $ carina plan example.crn
-Using AWS provider (region: ap-northeast-1)
 Execution Plan:
 
   + s3_bucket
@@ -85,12 +84,12 @@ Resources with dependencies are displayed as a tree:
   + vpc
       name: "main-vpc"
       cidr_block: "10.0.0.0/16"
-      └─ + subnet
-           name: "public-subnet"
-           vpc_id: "vpc-xxx"
-           └─ + security_group
-                name: "web-sg"
-                vpc_id: "vpc-xxx"
+        └─ + security_group
+              name: "web-sg"
+              vpc_id: main_vpc.id
+              └─ + security_group.ingress_rule
+                    name: "http"
+                    security_group_id: web_sg.id
 ```
 
 ### 4. Apply
@@ -181,20 +180,25 @@ web_tier {
 
 ```bash
 $ carina module info modules/web_tier
-module web_tier
+Module: web_tier
 
-inputs:
-  vpc: ref(aws.vpc)
-  cidr_blocks: list(cidr)
+=== REQUIRES ===
+
+  vpc: ref(aws.vpc)  (required)
+  cidr_blocks: list(cidr)  (required)
   enable_https: bool = true
 
-outputs:
-  security_group: ref(aws.security_group) = web_sg.id
+=== CREATES ===
 
-resources:
-  security_group (let web_sg)
-  security_group.ingress_rule
-  security_group.ingress_rule
+  input { vpc: ref(aws.vpc) }
+    └── web_sg: aws.security_group
+       ├── http: aws.security_group.ingress_rule
+       └── https: aws.security_group.ingress_rule
+
+=== EXPOSES ===
+
+  security_group: ref(aws.security_group)
+    <- from: web_sg
 ```
 
 ## Architecture
