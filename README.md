@@ -29,58 +29,49 @@ The binary will be available at `target/release/carina`.
 Create a `.crn` file:
 
 ```
-# example.crn
+# main.crn
 
 provider aws {
     region = aws.Region.ap_northeast_1
 }
 
-# Anonymous resource (ID derived from name attribute)
-aws.s3.bucket {
-    name = "my-app-logs"
-    region = aws.Region.ap_northeast_1
-    versioning = true
-    expiration_days = 90
+let main_vpc = aws.vpc {
+    name       = "main-vpc"
+    cidr_block = "10.0.0.0/16"
 }
 
-# Named resource (for referencing)
-let backup = aws.s3.bucket {
-    name = "my-app-backup"
-    region = aws.Region.ap_northeast_1
+let web_sg = aws.security_group {
+    name   = "web-sg"
+    vpc_id = main_vpc.id
+}
+
+aws.security_group.ingress_rule {
+    name              = "http"
+    security_group_id = web_sg.id
+    from_port         = 80
+    to_port           = 80
+    protocol          = "tcp"
+    cidr_blocks       = ["0.0.0.0/0"]
 }
 ```
 
 ### 2. Validate
 
 ```bash
-$ carina validate example.crn
+$ carina validate main.crn
 Validating...
-✓ 2 resources validated successfully.
-  • s3_bucket.my-app-logs
-  • s3_bucket.my-app-backup
+✓ 3 resources validated successfully.
+  • vpc.main-vpc
+  • security_group.web-sg
+  • security_group.ingress_rule.http
 ```
 
 ### 3. Plan
 
 ```bash
-$ carina plan example.crn
+$ carina plan main.crn
 Execution Plan:
 
-  + s3_bucket
-      name: "my-app-logs"
-      expiration_days: 90
-      region: "ap-northeast-1"
-      versioning: true
-  + s3_bucket
-      name: "my-app-backup"
-      region: "ap-northeast-1"
-
-Plan: 2 to add, 0 to change, 0 to destroy.
-```
-
-Resources with dependencies are displayed as a tree:
-
-```
   + vpc
       name: "main-vpc"
       cidr_block: "10.0.0.0/16"
@@ -90,19 +81,21 @@ Resources with dependencies are displayed as a tree:
               └─ + security_group.ingress_rule
                     name: "http"
                     security_group_id: web_sg.id
+
+Plan: 3 to add, 0 to change, 0 to destroy.
 ```
 
 ### 4. Apply
 
 ```bash
-$ carina apply example.crn
-Using AWS provider (region: ap-northeast-1)
+$ carina apply main.crn
 Applying changes...
 
-  ✓ Create s3_bucket.my-app-logs
-  ✓ Create s3_bucket.my-app-backup
+  ✓ Create vpc.main-vpc
+  ✓ Create security_group.web-sg
+  ✓ Create security_group.ingress_rule.http
 
-Apply complete! 2 changes applied.
+Apply complete! 3 changes applied.
 ```
 
 ## DSL Syntax
@@ -120,19 +113,21 @@ provider aws {
 **Anonymous resources** - ID is derived from the `name` attribute:
 
 ```
-aws.s3.bucket {
-    name = "my-bucket"
-    region = aws.Region.ap_northeast_1
-    versioning = true
+aws.security_group.ingress_rule {
+    name              = "http"
+    security_group_id = web_sg.id
+    from_port         = 80
+    to_port           = 80
+    protocol          = "tcp"
 }
 ```
 
 **Named resources** - Use `let` binding for referencing:
 
 ```
-let logs = aws.s3.bucket {
-    name = "my-logs"
-    region = aws.Region.ap_northeast_1
+let web_sg = aws.security_group {
+    name   = "web-sg"
+    vpc_id = main_vpc.id
 }
 ```
 
@@ -274,7 +269,7 @@ The AWS provider requires valid AWS credentials. Configure via:
 ### Using with aws-vault
 
 ```bash
-aws-vault exec myprofile -- carina apply example.crn
+aws-vault exec myprofile -- carina apply main.crn
 ```
 
 ## Commands
@@ -305,13 +300,14 @@ $ carina fmt --diff
 Remove all resources defined in a configuration:
 
 ```bash
-$ carina destroy example.crn
+$ carina destroy main.crn
 Destroy Plan:
 
-  - s3_bucket.my-app-logs
-  - s3_bucket.my-app-backup
+  - security_group.ingress_rule.http
+  - security_group.web-sg
+  - vpc.main-vpc
 
-Plan: 2 to destroy.
+Plan: 3 to destroy.
 
 Do you really want to destroy all resources?
   This action cannot be undone. Type 'yes' to confirm.
@@ -320,10 +316,11 @@ Do you really want to destroy all resources?
 
 Destroying resources...
 
-  ✓ Delete s3_bucket.my-app-logs
-  ✓ Delete s3_bucket.my-app-backup
+  ✓ Delete security_group.ingress_rule.http
+  ✓ Delete security_group.web-sg
+  ✓ Delete vpc.main-vpc
 
-Destroy complete! 2 resources destroyed.
+Destroy complete! 3 resources destroyed.
 ```
 
 Use `--auto-approve` to skip the confirmation prompt.
