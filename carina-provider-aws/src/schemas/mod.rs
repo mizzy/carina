@@ -1,6 +1,7 @@
 //! AWS resource schema definitions
 
 pub mod s3;
+pub mod types;
 pub mod vpc;
 
 use carina_core::schema::ResourceSchema;

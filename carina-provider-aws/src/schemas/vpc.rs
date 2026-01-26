@@ -3,6 +3,8 @@
 use carina_core::resource::Value;
 use carina_core::schema::{AttributeSchema, AttributeType, ResourceSchema, types};
 
+use super::types as aws_types;
+
 /// Port number type (with validation)
 pub fn port_number() -> AttributeType {
     AttributeType::Custom {
@@ -117,7 +119,7 @@ pub fn vpc_schema() -> ResourceSchema {
                 .with_description("VPC name (Name tag)"),
         )
         .attribute(
-            AttributeSchema::new("region", types::aws_region()).with_description(
+            AttributeSchema::new("region", aws_types::aws_region()).with_description(
                 "The AWS region for the VPC (inherited from provider if not specified)",
             ),
         )
@@ -150,7 +152,7 @@ pub fn subnet_schema() -> ResourceSchema {
                 .with_description("Subnet name (Name tag)"),
         )
         .attribute(
-            AttributeSchema::new("region", types::aws_region()).with_description(
+            AttributeSchema::new("region", aws_types::aws_region()).with_description(
                 "The AWS region for the subnet (inherited from provider if not specified)",
             ),
         )
@@ -184,7 +186,7 @@ pub fn internet_gateway_schema() -> ResourceSchema {
                 .with_description("Internet Gateway name (Name tag)"),
         )
         .attribute(
-            AttributeSchema::new("region", types::aws_region())
+            AttributeSchema::new("region", aws_types::aws_region())
                 .with_description("The AWS region for the Internet Gateway (inherited from provider if not specified)"),
         )
         .attribute(
@@ -207,7 +209,7 @@ pub fn route_table_schema() -> ResourceSchema {
                 .with_description("Route Table name (Name tag)"),
         )
         .attribute(
-            AttributeSchema::new("region", types::aws_region()).with_description(
+            AttributeSchema::new("region", aws_types::aws_region()).with_description(
                 "The AWS region for the Route Table (inherited from provider if not specified)",
             ),
         )
@@ -228,7 +230,7 @@ pub fn route_schema() -> ResourceSchema {
                 .with_description("Route name (for identification)"),
         )
         .attribute(
-            AttributeSchema::new("region", types::aws_region())
+            AttributeSchema::new("region", aws_types::aws_region())
                 .with_description("The AWS region (inherited from provider if not specified)"),
         )
         .attribute(
@@ -265,7 +267,7 @@ pub fn security_group_schema() -> ResourceSchema {
                 .with_description("Security Group name (Name tag)"),
         )
         .attribute(
-            AttributeSchema::new("region", types::aws_region()).with_description(
+            AttributeSchema::new("region", aws_types::aws_region()).with_description(
                 "The AWS region for the Security Group (inherited from provider if not specified)",
             ),
         )
@@ -294,7 +296,7 @@ pub fn security_group_ingress_rule_schema() -> ResourceSchema {
                 .with_description("Rule name (for identification)"),
         )
         .attribute(
-            AttributeSchema::new("region", types::aws_region())
+            AttributeSchema::new("region", aws_types::aws_region())
                 .with_description("The AWS region (inherited from provider if not specified)"),
         )
         .attribute(
@@ -337,7 +339,7 @@ pub fn security_group_egress_rule_schema() -> ResourceSchema {
                 .with_description("Rule name (for identification)"),
         )
         .attribute(
-            AttributeSchema::new("region", types::aws_region())
+            AttributeSchema::new("region", aws_types::aws_region())
                 .with_description("The AWS region (inherited from provider if not specified)"),
         )
         .attribute(
