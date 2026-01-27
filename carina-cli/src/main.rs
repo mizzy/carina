@@ -130,13 +130,21 @@ fn validate_resources(resources: &[Resource]) -> Result<(), String> {
     let mut all_errors = Vec::new();
 
     for resource in resources {
-        if let Some(schema) = schemas.get(&resource.id.resource_type)
-            && let Err(errors) = schema.validate(&resource.attributes)
-        {
-            for error in errors {
+        match schemas.get(&resource.id.resource_type) {
+            Some(schema) => {
+                if let Err(errors) = schema.validate(&resource.attributes) {
+                    for error in errors {
+                        all_errors.push(format!(
+                            "{}.{}: {}",
+                            resource.id.resource_type, resource.id.name, error
+                        ));
+                    }
+                }
+            }
+            None => {
                 all_errors.push(format!(
-                    "{}.{}: {}",
-                    resource.id.resource_type, resource.id.name, error
+                    "Unknown resource type: aws.{}",
+                    resource.id.resource_type
                 ));
             }
         }
