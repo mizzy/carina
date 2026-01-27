@@ -69,6 +69,29 @@ When modifying resource schemas (`carina-provider-aws/src/schemas/`), also updat
 - **Completion** (`carina-lsp/src/completion.rs`): Add value completions for new types
 - **Diagnostics** (`carina-lsp/src/diagnostics.rs`): Add type validation for new types
 
+**Testing**: When bugs are found or issues are pointed out, write test code to capture the fix. This ensures regressions are caught and documents expected behavior.
+
+### Provider-Specific Types
+
+AWS-specific type definitions (e.g., region validation, versioning status) belong in `carina-provider-aws/src/schemas/types.rs`, NOT in `carina-core`. Keep `carina-core` provider-agnostic.
+
+### Resource Type Mapping
+
+Resource types in schemas use dot notation (`s3.bucket`, `vpc.vpc`), not underscore format (`s3_bucket`). When mapping between DSL resource types and schema lookups:
+- DSL: `aws.s3.bucket` → Schema key: `s3.bucket`
+- Ensure `extract_resource_type()` in completion.rs and `valid_resource_types` in diagnostics.rs use consistent dot notation
+
+### Validation Formats
+
+- **Region**: Accepts both DSL format (`aws.Region.ap_northeast_1`) and AWS string format (`"ap-northeast-1"`). Validation normalizes both to AWS format for comparison.
+- **S3 Versioning**: Uses enum `Enabled`/`Suspended`, not boolean. AWS SDK returns these exact strings.
+
+### Module Loading
+
+Directory-based modules (e.g., `modules/web_tier/`) require special handling:
+- CLI: `load_module()` checks `is_dir()` and reads `main.crn` from directory
+- LSP: `load_directory_module()` in diagnostics.rs handles directory modules for proper validation
+
 ## Code Style
 
 - **Commit messages**: Write in English

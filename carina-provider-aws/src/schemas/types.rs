@@ -73,3 +73,124 @@ fn normalize_region(s: &str) -> String {
 pub fn versioning_status() -> AttributeType {
     AttributeType::Enum(vec!["Enabled".to_string(), "Suspended".to_string()])
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Region validation tests
+
+    #[test]
+    fn region_accepts_aws_format() {
+        let region_type = aws_region();
+        assert!(
+            region_type
+                .validate(&Value::String("ap-northeast-1".to_string()))
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn region_accepts_dsl_format() {
+        let region_type = aws_region();
+        assert!(
+            region_type
+                .validate(&Value::String("aws.Region.ap_northeast_1".to_string()))
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn region_accepts_dsl_format_without_aws_prefix() {
+        let region_type = aws_region();
+        assert!(
+            region_type
+                .validate(&Value::String("Region.ap_northeast_1".to_string()))
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn region_rejects_invalid_region() {
+        let region_type = aws_region();
+        let result = region_type.validate(&Value::String("invalid-region".to_string()));
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("Invalid region"));
+        assert!(err.contains("ap-northeast-1")); // Should suggest valid regions
+    }
+
+    #[test]
+    fn region_rejects_availability_zone() {
+        let region_type = aws_region();
+        // ap-northeast-1a is an AZ, not a region
+        assert!(
+            region_type
+                .validate(&Value::String("ap-northeast-1a".to_string()))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn region_validates_all_valid_regions() {
+        let region_type = aws_region();
+        for region in VALID_REGIONS {
+            assert!(
+                region_type
+                    .validate(&Value::String(region.to_string()))
+                    .is_ok(),
+                "Region {} should be valid",
+                region
+            );
+        }
+    }
+
+    // Versioning status tests
+
+    #[test]
+    fn versioning_accepts_enabled() {
+        let versioning = versioning_status();
+        assert!(
+            versioning
+                .validate(&Value::String("Enabled".to_string()))
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn versioning_accepts_suspended() {
+        let versioning = versioning_status();
+        assert!(
+            versioning
+                .validate(&Value::String("Suspended".to_string()))
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn versioning_rejects_lowercase() {
+        let versioning = versioning_status();
+        assert!(
+            versioning
+                .validate(&Value::String("enabled".to_string()))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn versioning_rejects_bool() {
+        let versioning = versioning_status();
+        assert!(versioning.validate(&Value::Bool(true)).is_err());
+        assert!(versioning.validate(&Value::Bool(false)).is_err());
+    }
+
+    #[test]
+    fn versioning_rejects_disabled() {
+        let versioning = versioning_status();
+        assert!(
+            versioning
+                .validate(&Value::String("Disabled".to_string()))
+                .is_err()
+        );
+    }
+}
