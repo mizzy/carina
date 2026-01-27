@@ -69,6 +69,8 @@ When modifying resource schemas (`carina-provider-aws/src/schemas/`), also updat
 - **Completion** (`carina-lsp/src/completion.rs`): Add value completions for new types
 - **Diagnostics** (`carina-lsp/src/diagnostics.rs`): Add type validation for new types
 
+**Testing**: When bugs are found or issues are pointed out, write test code to capture the fix. This ensures regressions are caught and documents expected behavior.
+
 ### Provider-Specific Types
 
 AWS-specific type definitions (e.g., region validation, versioning status) belong in `carina-provider-aws/src/schemas/types.rs`, NOT in `carina-core`. Keep `carina-core` provider-agnostic.
