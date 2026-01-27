@@ -227,12 +227,8 @@ impl DiagnosticEngine {
 
     fn find_resource_position(&self, doc: &Document, resource_type: &str) -> Option<(u32, u32)> {
         let text = doc.text();
-        // Convert resource_type back to DSL format: vpc -> aws.vpc, s3_bucket -> aws.s3.bucket
-        let dsl_type = if resource_type == "s3_bucket" {
-            "aws.s3.bucket".to_string()
-        } else {
-            format!("aws.{}", resource_type.replace('_', "."))
-        };
+        // Convert resource_type back to DSL format: vpc -> aws.vpc, s3.bucket -> aws.s3.bucket
+        let dsl_type = format!("aws.{}", resource_type.replace('_', "."));
 
         for (line_idx, line) in text.lines().enumerate() {
             if let Some(col) = line.find(&dsl_type) {
