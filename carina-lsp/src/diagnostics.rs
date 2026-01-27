@@ -17,7 +17,7 @@ impl DiagnosticEngine {
         let mut valid_resource_types = HashSet::new();
 
         // S3 resources
-        valid_resource_types.insert("s3_bucket".to_string());
+        valid_resource_types.insert("s3.bucket".to_string());
 
         // VPC resources
         valid_resource_types.insert("vpc".to_string());
