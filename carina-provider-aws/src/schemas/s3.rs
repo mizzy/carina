@@ -9,7 +9,7 @@ pub fn bucket_schema() -> ResourceSchema {
     ResourceSchema::new("s3.bucket")
         .with_description("An S3 bucket for object storage")
         .attribute(
-            AttributeSchema::new("name", types::s3_bucket_name())
+            AttributeSchema::new("name", aws_types::s3_bucket_name())
                 .with_description("Override bucket name (defaults to resource name)"),
         )
         .attribute(
@@ -18,7 +18,7 @@ pub fn bucket_schema() -> ResourceSchema {
             ),
         )
         .attribute(
-            AttributeSchema::new("acl", types::s3_acl())
+            AttributeSchema::new("acl", aws_types::s3_acl())
                 .with_description("The canned ACL for the bucket"),
         )
         .attribute(

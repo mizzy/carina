@@ -74,6 +74,44 @@ pub fn versioning_status() -> AttributeType {
     AttributeType::Enum(vec!["Enabled".to_string(), "Suspended".to_string()])
 }
 
+/// S3 ACL enum type
+pub fn s3_acl() -> AttributeType {
+    AttributeType::Enum(vec![
+        "private".to_string(),
+        "public_read".to_string(),
+        "public_read_write".to_string(),
+        "authenticated_read".to_string(),
+    ])
+}
+
+/// S3 bucket name type (with validation)
+pub fn s3_bucket_name() -> AttributeType {
+    AttributeType::Custom {
+        name: "BucketName".to_string(),
+        base: Box::new(AttributeType::String),
+        validate: |value| {
+            if let Value::String(s) = value {
+                if s.len() < 3 {
+                    return Err("Bucket name must be at least 3 characters".to_string());
+                }
+                if s.len() > 63 {
+                    return Err("Bucket name must be at most 63 characters".to_string());
+                }
+                if !s.chars().next().unwrap_or('_').is_ascii_lowercase()
+                    && !s.chars().next().unwrap_or('_').is_ascii_digit()
+                {
+                    return Err(
+                        "Bucket name must start with a lowercase letter or number".to_string()
+                    );
+                }
+                Ok(())
+            } else {
+                Err("Expected string".to_string())
+            }
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
