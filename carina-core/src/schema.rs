@@ -246,63 +246,6 @@ impl ResourceSchema {
 pub mod types {
     use super::*;
 
-    /// AWS region enum type
-    pub fn aws_region() -> AttributeType {
-        AttributeType::Enum(vec![
-            "ap_northeast_1".to_string(),
-            "ap_northeast_2".to_string(),
-            "ap_northeast_3".to_string(),
-            "ap_southeast_1".to_string(),
-            "ap_southeast_2".to_string(),
-            "ap_south_1".to_string(),
-            "us_east_1".to_string(),
-            "us_east_2".to_string(),
-            "us_west_1".to_string(),
-            "us_west_2".to_string(),
-            "eu_west_1".to_string(),
-            "eu_west_2".to_string(),
-            "eu_central_1".to_string(),
-        ])
-    }
-
-    /// S3 ACL enum type
-    pub fn s3_acl() -> AttributeType {
-        AttributeType::Enum(vec![
-            "private".to_string(),
-            "public_read".to_string(),
-            "public_read_write".to_string(),
-            "authenticated_read".to_string(),
-        ])
-    }
-
-    /// S3 bucket name type (with validation)
-    pub fn s3_bucket_name() -> AttributeType {
-        AttributeType::Custom {
-            name: "BucketName".to_string(),
-            base: Box::new(AttributeType::String),
-            validate: |value| {
-                if let Value::String(s) = value {
-                    if s.len() < 3 {
-                        return Err("Bucket name must be at least 3 characters".to_string());
-                    }
-                    if s.len() > 63 {
-                        return Err("Bucket name must be at most 63 characters".to_string());
-                    }
-                    if !s.chars().next().unwrap_or('_').is_ascii_lowercase()
-                        && !s.chars().next().unwrap_or('_').is_ascii_digit()
-                    {
-                        return Err(
-                            "Bucket name must start with a lowercase letter or number".to_string()
-                        );
-                    }
-                    Ok(())
-                } else {
-                    Err("Expected string".to_string())
-                }
-            },
-        }
-    }
-
     /// Positive integer type
     pub fn positive_int() -> AttributeType {
         AttributeType::Custom {
@@ -400,39 +343,25 @@ mod tests {
     }
 
     #[test]
-    fn validate_aws_region() {
-        let t = types::aws_region();
-        assert!(
-            t.validate(&Value::String("Region.ap_northeast_1".to_string()))
-                .is_ok()
-        );
-        assert!(
-            t.validate(&Value::String("Region.invalid".to_string()))
-                .is_err()
-        );
-    }
-
-    #[test]
-    fn validate_bucket_name() {
-        let t = types::s3_bucket_name();
-        assert!(t.validate(&Value::String("my-bucket".to_string())).is_ok());
-        assert!(t.validate(&Value::String("ab".to_string())).is_err()); // too short
+    fn validate_positive_int() {
+        let t = types::positive_int();
+        assert!(t.validate(&Value::Int(1)).is_ok());
+        assert!(t.validate(&Value::Int(100)).is_ok());
+        assert!(t.validate(&Value::Int(0)).is_err());
+        assert!(t.validate(&Value::Int(-1)).is_err());
     }
 
     #[test]
     fn validate_resource_schema() {
-        let schema = ResourceSchema::new("bucket")
-            .attribute(AttributeSchema::new("name", types::s3_bucket_name()).required())
-            .attribute(AttributeSchema::new("region", types::aws_region()))
-            .attribute(AttributeSchema::new("versioning", AttributeType::Bool));
+        let schema = ResourceSchema::new("resource")
+            .attribute(AttributeSchema::new("name", AttributeType::String).required())
+            .attribute(AttributeSchema::new("count", types::positive_int()))
+            .attribute(AttributeSchema::new("enabled", AttributeType::Bool));
 
         let mut attrs = HashMap::new();
-        attrs.insert("name".to_string(), Value::String("my-bucket".to_string()));
-        attrs.insert(
-            "region".to_string(),
-            Value::String("Region.ap_northeast_1".to_string()),
-        );
-        attrs.insert("versioning".to_string(), Value::Bool(true));
+        attrs.insert("name".to_string(), Value::String("my-resource".to_string()));
+        attrs.insert("count".to_string(), Value::Int(5));
+        attrs.insert("enabled".to_string(), Value::Bool(true));
 
         assert!(schema.validate(&attrs).is_ok());
     }
