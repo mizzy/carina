@@ -19,7 +19,7 @@ backend s3 {
 # Application bucket
 aws.s3.bucket {
   name       = "my-app-bucket"
-  versioning = aws.s3.VersioningStatus.Enabled
+  versioning = Enabled
 }
 
 # Log bucket with expiration

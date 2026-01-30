@@ -780,11 +780,18 @@ fn parse_primary_value(
                             parts[0], parts[1]
                         ),
                     })
-                } else {
-                    // Treat as resource reference (will be validated in resolve phase)
+                } else if ctx.is_resource_binding(parts[0]) {
+                    // Known resource binding: treat as resource reference
                     Ok(Value::ResourceRef(
                         parts[0].to_string(),
                         parts[1].to_string(),
+                    ))
+                } else {
+                    // Unknown 2-part identifier: could be TypeName.value enum shorthand
+                    // Will be resolved during schema validation
+                    Ok(Value::UnresolvedIdent(
+                        parts[0].to_string(),
+                        Some(parts[1].to_string()),
                     ))
                 }
             } else {
@@ -830,7 +837,11 @@ fn parse_primary_value(
                 // Simple variable reference
                 match ctx.get_variable(first_ident) {
                     Some(val) => Ok(val.clone()),
-                    None => Err(ParseError::UndefinedVariable(first_ident.to_string())),
+                    None => {
+                        // Unknown identifier: could be a shorthand enum value
+                        // Will be resolved during schema validation
+                        Ok(Value::UnresolvedIdent(first_ident.to_string(), None))
+                    }
                 }
             }
         }
@@ -937,6 +948,8 @@ fn resolve_value(
             }
             Ok(Value::Map(resolved))
         }
+        // UnresolvedIdent is kept as-is for later resolution during schema validation
+        Value::UnresolvedIdent(_, _) => Ok(value.clone()),
         _ => Ok(value.clone()),
     }
 }
@@ -1216,7 +1229,9 @@ mod tests {
     }
 
     #[test]
-    fn parse_undefined_resource_reference_fails() {
+    fn parse_undefined_resource_reference_becomes_unresolved() {
+        // When a 2-part identifier references an unknown binding,
+        // it becomes an UnresolvedIdent to be resolved during schema validation
         let input = r#"
             let policy = aws.s3.bucket_policy {
                 name = "my-policy"
@@ -1224,15 +1239,17 @@ mod tests {
             }
         "#;
 
-        // Parsing succeeds, but resolution fails
+        // Parsing succeeds - unknown identifiers become UnresolvedIdent
         let result = parse_and_resolve(input);
-        assert!(result.is_err());
-        match result {
-            Err(ParseError::UndefinedVariable(name)) => {
-                assert!(name.contains("nonexistent"));
-            }
-            _ => panic!("Expected UndefinedVariable error"),
-        }
+        assert!(result.is_ok());
+        let parsed = result.unwrap();
+        assert_eq!(
+            parsed.resources[0].attributes.get("bucket"),
+            Some(&Value::UnresolvedIdent(
+                "nonexistent".to_string(),
+                Some("name".to_string())
+            ))
+        );
     }
 
     #[test]

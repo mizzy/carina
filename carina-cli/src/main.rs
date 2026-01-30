@@ -2214,6 +2214,10 @@ fn format_value_with_key(value: &Value, _key: Option<&str>) -> String {
             attribute_name,
             ..
         } => format!("{}.{}", binding_name, attribute_name),
+        Value::UnresolvedIdent(name, member) => match member {
+            Some(m) => format!("{}.{}", name, m),
+            None => name.clone(),
+        },
     }
 }
 
@@ -2295,6 +2299,10 @@ fn value_to_json(value: &Value) -> serde_json::Value {
             attribute_name,
             ..
         } => serde_json::Value::String(format!("${{{}.{}}}", binding_name, attribute_name)),
+        Value::UnresolvedIdent(name, member) => match member {
+            Some(m) => serde_json::Value::String(format!("{}.{}", name, m)),
+            None => serde_json::Value::String(name.clone()),
+        },
     }
 }
 
@@ -2501,6 +2509,11 @@ impl FileProvider {
                 attribute_name,
                 ..
             } => serde_json::Value::String(format!("${{{}.{}}}", binding_name, attribute_name)),
+            // UnresolvedIdent should be resolved before reaching here, but handle it as a string
+            Value::UnresolvedIdent(name, member) => match member {
+                Some(m) => serde_json::Value::String(format!("{}.{}", name, m)),
+                None => serde_json::Value::String(name.clone()),
+            },
         }
     }
 

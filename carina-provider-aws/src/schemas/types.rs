@@ -28,6 +28,7 @@ const VALID_REGIONS: &[&str] = &[
 /// Accepts:
 /// - DSL format: aws.Region.ap_northeast_1
 /// - AWS string format: "ap-northeast-1"
+/// - Shorthand: ap_northeast_1
 pub fn aws_region() -> AttributeType {
     AttributeType::Custom {
         name: "Region".to_string(),
@@ -49,6 +50,7 @@ pub fn aws_region() -> AttributeType {
                 Err("Expected string".to_string())
             }
         },
+        namespace: Some("aws".to_string()),
     }
 }
 
@@ -73,7 +75,8 @@ const VALID_VERSIONING_STATUS: &[&str] = &["Enabled", "Suspended"];
 /// S3 bucket versioning status
 /// Accepts:
 /// - DSL format: aws.s3.VersioningStatus.Enabled
-/// - String format: "Enabled"
+/// - Short DSL format: VersioningStatus.Enabled
+/// - Value only: Enabled, Suspended
 pub fn versioning_status() -> AttributeType {
     AttributeType::Custom {
         name: "VersioningStatus".to_string(),
@@ -82,17 +85,35 @@ pub fn versioning_status() -> AttributeType {
             if let Value::String(s) = value {
                 // Check namespace format if it contains dots
                 if s.contains('.') {
-                    // Must be aws.s3.VersioningStatus.<value>
                     let parts: Vec<&str> = s.split('.').collect();
-                    if parts.len() != 4
-                        || parts[0] != "aws"
-                        || parts[1] != "s3"
-                        || parts[2] != "VersioningStatus"
-                    {
-                        return Err(format!(
-                            "Invalid versioning status '{}', expected one of: aws.s3.VersioningStatus.Enabled, aws.s3.VersioningStatus.Suspended",
-                            s
-                        ));
+                    match parts.len() {
+                        // 2-part: VersioningStatus.value
+                        2 => {
+                            if parts[0] != "VersioningStatus" {
+                                return Err(format!(
+                                    "Invalid versioning status '{}', expected format: VersioningStatus.Enabled or VersioningStatus.Suspended",
+                                    s
+                                ));
+                            }
+                        }
+                        // 4-part: aws.s3.VersioningStatus.value
+                        4 => {
+                            if parts[0] != "aws"
+                                || parts[1] != "s3"
+                                || parts[2] != "VersioningStatus"
+                            {
+                                return Err(format!(
+                                    "Invalid versioning status '{}', expected format: aws.s3.VersioningStatus.Enabled or aws.s3.VersioningStatus.Suspended",
+                                    s
+                                ));
+                            }
+                        }
+                        _ => {
+                            return Err(format!(
+                                "Invalid versioning status '{}', expected one of: Enabled, Suspended, VersioningStatus.Enabled, or aws.s3.VersioningStatus.Enabled",
+                                s
+                            ));
+                        }
                     }
                 }
                 let normalized = normalize_versioning_status(s);
@@ -100,7 +121,7 @@ pub fn versioning_status() -> AttributeType {
                     Ok(())
                 } else {
                     Err(format!(
-                        "Invalid versioning status '{}', expected one of: aws.s3.VersioningStatus.Enabled, aws.s3.VersioningStatus.Suspended",
+                        "Invalid versioning status '{}', expected one of: Enabled, Suspended",
                         s
                     ))
                 }
@@ -108,6 +129,7 @@ pub fn versioning_status() -> AttributeType {
                 Err("Expected string".to_string())
             }
         },
+        namespace: Some("aws.s3".to_string()),
     }
 }
 
@@ -157,6 +179,7 @@ pub fn s3_bucket_name() -> AttributeType {
                 Err("Expected string".to_string())
             }
         },
+        namespace: None,
     }
 }
 

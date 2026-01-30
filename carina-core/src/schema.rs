@@ -24,6 +24,9 @@ pub enum AttributeType {
         name: String,
         base: Box<AttributeType>,
         validate: fn(&Value) -> Result<(), String>,
+        /// Namespace for resolving shorthand enum values (e.g., "aws.vpc")
+        /// When set, allows `dedicated` to be resolved to `aws.vpc.InstanceTenancy.dedicated`
+        namespace: Option<String>,
     },
     /// List
     List(Box<AttributeType>),
@@ -53,8 +56,42 @@ impl AttributeType {
                 }
             }
 
-            (AttributeType::Custom { validate, .. }, v) => {
-                validate(v).map_err(|msg| TypeError::ValidationFailed { message: msg })
+            (
+                AttributeType::Custom {
+                    validate,
+                    name,
+                    namespace,
+                    ..
+                },
+                v,
+            ) => {
+                // Handle UnresolvedIdent by expanding to full namespace format
+                let resolved_value = match v {
+                    Value::UnresolvedIdent(ident, member) => {
+                        let expanded = match (namespace, member) {
+                            // TypeName.value -> namespace.TypeName.value
+                            (Some(ns), Some(m)) if ident == name => {
+                                format!("{}.{}.{}", ns, ident, m)
+                            }
+                            // SomeOther.value with namespace -> namespace.TypeName.SomeOther.value
+                            // This is an error case, but let validation handle it
+                            (Some(_ns), Some(m)) => {
+                                format!("{}.{}", ident, m)
+                            }
+                            // value -> namespace.TypeName.value
+                            (Some(ns), None) => {
+                                format!("{}.{}.{}", ns, name, ident)
+                            }
+                            // No namespace, keep as-is for validation
+                            (None, Some(m)) => format!("{}.{}", ident, m),
+                            (None, None) => ident.clone(),
+                        };
+                        Value::String(expanded)
+                    }
+                    _ => v.clone(),
+                };
+                validate(&resolved_value)
+                    .map_err(|msg| TypeError::ValidationFailed { message: msg })
             }
 
             (AttributeType::List(inner), Value::List(items)) => {
@@ -145,6 +182,10 @@ impl Value {
                 attribute_name,
                 ..
             } => format!("TypedResourceRef({}.{})", binding_name, attribute_name),
+            Value::UnresolvedIdent(name, member) => match member {
+                Some(m) => format!("UnresolvedIdent({}.{})", name, m),
+                None => format!("UnresolvedIdent({})", name),
+            },
         }
     }
 }
@@ -288,6 +329,7 @@ pub mod types {
                     Err("Expected integer".to_string())
                 }
             },
+            namespace: None,
         }
     }
 
@@ -303,6 +345,7 @@ pub mod types {
                     Err("Expected string".to_string())
                 }
             },
+            namespace: None,
         }
     }
 }

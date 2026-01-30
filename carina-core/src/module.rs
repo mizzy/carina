@@ -150,6 +150,10 @@ fn format_value(value: &Value) -> String {
             attribute_name,
             ..
         } => format!("{}.{}", binding_name, attribute_name),
+        Value::UnresolvedIdent(name, member) => match member {
+            Some(m) => format!("{}.{}", name, m),
+            None => name.clone(),
+        },
     }
 }
 

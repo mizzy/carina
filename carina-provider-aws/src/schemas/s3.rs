@@ -25,14 +25,8 @@ pub fn bucket_schema() -> ResourceSchema {
             AttributeSchema::new("versioning", aws_types::versioning_status())
                 .with_description("Versioning status for the bucket (Enabled or Suspended)")
                 .with_completions(vec![
-                    CompletionValue::new(
-                        "aws.s3.VersioningStatus.Enabled",
-                        "Enable versioning for the bucket",
-                    ),
-                    CompletionValue::new(
-                        "aws.s3.VersioningStatus.Suspended",
-                        "Suspend versioning for the bucket",
-                    ),
+                    CompletionValue::new("Enabled", "Enable versioning for the bucket"),
+                    CompletionValue::new("Suspended", "Suspend versioning for the bucket"),
                 ]),
         )
         .attribute(
