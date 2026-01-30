@@ -1368,22 +1368,17 @@ simple {
 
         let completions = provider.complete(&doc, position, None);
 
-        // Should have aws.vpc.InstanceTenancy completions
-        let default_completion = completions
-            .iter()
-            .find(|c| c.label == "aws.vpc.InstanceTenancy.default");
+        // Should have shorthand instance_tenancy completions
+        let default_completion = completions.iter().find(|c| c.label == "default");
         assert!(
             default_completion.is_some(),
-            "Should have aws.vpc.InstanceTenancy.default completion"
+            "Should have 'default' completion"
         );
 
-        // Should NOT have awscc completions
-        let awscc_completion = completions
-            .iter()
-            .find(|c| c.label.contains("awscc.vpc.InstanceTenancy"));
+        let dedicated_completion = completions.iter().find(|c| c.label == "dedicated");
         assert!(
-            awscc_completion.is_none(),
-            "Should NOT have awscc.vpc.InstanceTenancy completion for aws.vpc resource"
+            dedicated_completion.is_some(),
+            "Should have 'dedicated' completion"
         );
     }
 
@@ -1404,22 +1399,17 @@ simple {
 
         let completions = provider.complete(&doc, position, None);
 
-        // Should have awscc.vpc.InstanceTenancy completions
-        let default_completion = completions
-            .iter()
-            .find(|c| c.label == "awscc.vpc.InstanceTenancy.default");
+        // Should have shorthand instance_tenancy completions
+        let default_completion = completions.iter().find(|c| c.label == "default");
         assert!(
             default_completion.is_some(),
-            "Should have awscc.vpc.InstanceTenancy.default completion"
+            "Should have 'default' completion"
         );
 
-        // Should NOT have aws completions
-        let aws_completion = completions
-            .iter()
-            .find(|c| c.label == "aws.vpc.InstanceTenancy.default");
+        let dedicated_completion = completions.iter().find(|c| c.label == "dedicated");
         assert!(
-            aws_completion.is_none(),
-            "Should NOT have aws.vpc.InstanceTenancy completion for awscc.vpc resource"
+            dedicated_completion.is_some(),
+            "Should have 'dedicated' completion"
         );
     }
 
@@ -1440,21 +1430,17 @@ simple {
 
         let completions = provider.complete(&doc, position, None);
 
-        // Should have aws.s3.VersioningStatus completions
-        let enabled_completion = completions
-            .iter()
-            .find(|c| c.label == "aws.s3.VersioningStatus.Enabled");
+        // Should have shorthand versioning status completions
+        let enabled_completion = completions.iter().find(|c| c.label == "Enabled");
         assert!(
             enabled_completion.is_some(),
-            "Should have aws.s3.VersioningStatus.Enabled completion"
+            "Should have 'Enabled' completion"
         );
 
-        let suspended_completion = completions
-            .iter()
-            .find(|c| c.label == "aws.s3.VersioningStatus.Suspended");
+        let suspended_completion = completions.iter().find(|c| c.label == "Suspended");
         assert!(
             suspended_completion.is_some(),
-            "Should have aws.s3.VersioningStatus.Suspended completion"
+            "Should have 'Suspended' completion"
         );
     }
 }

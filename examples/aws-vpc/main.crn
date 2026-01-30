@@ -17,7 +17,7 @@ let main_vpc = aws.vpc {
   cidr_block           = "10.0.0.0/16"
   enable_dns_support   = true
   enable_dns_hostnames = true
-  instance_tenancy     = aws.vpc.InstanceTenancy.dedicated
+  instance_tenancy     = dedicated
 }
 
 # Public Subnet 1
@@ -82,6 +82,5 @@ aws.security_group.ingress_rule {
   protocol          = "tcp"
   cidr_blocks       = ["0.0.0.0/0"]
 }
-
 # Note: AWS Security Groups allow all outbound traffic by default,
 # so we don't need to explicitly define an egress rule for 0.0.0.0/0

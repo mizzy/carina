@@ -31,6 +31,7 @@ const VALID_REGIONS: &[&str] = &[
 /// Accepts:
 /// - DSL format: aws.Region.ap_northeast_1
 /// - AWS string format: "ap-northeast-1"
+/// - Shorthand: ap_northeast_1
 pub fn aws_region() -> AttributeType {
     AttributeType::Custom {
         name: "Region".to_string(),
@@ -51,6 +52,7 @@ pub fn aws_region() -> AttributeType {
                 Err("Expected string".to_string())
             }
         },
+        namespace: Some("aws".to_string()),
     }
 }
 
@@ -69,8 +71,9 @@ const VALID_INSTANCE_TENANCY: &[&str] = &["default", "dedicated", "host"];
 
 /// Instance tenancy type for VPC
 /// Accepts:
-/// - DSL format: awscc.vpc.InstanceTenancy.default
-/// - String format: "default"
+/// - Full DSL format: awscc.vpc.InstanceTenancy.default
+/// - Short DSL format: InstanceTenancy.dedicated
+/// - Value only: "default", "dedicated", "host"
 pub fn instance_tenancy() -> AttributeType {
     AttributeType::Custom {
         name: "InstanceTenancy".to_string(),
@@ -79,17 +82,35 @@ pub fn instance_tenancy() -> AttributeType {
             if let Value::String(s) = value {
                 // Check namespace format if it contains dots
                 if s.contains('.') {
-                    // Must be awscc.vpc.InstanceTenancy.<value>
                     let parts: Vec<&str> = s.split('.').collect();
-                    if parts.len() != 4
-                        || parts[0] != "awscc"
-                        || parts[1] != "vpc"
-                        || parts[2] != "InstanceTenancy"
-                    {
-                        return Err(format!(
-                            "Invalid instance tenancy '{}', expected one of: awscc.vpc.InstanceTenancy.default, awscc.vpc.InstanceTenancy.dedicated, awscc.vpc.InstanceTenancy.host",
-                            s
-                        ));
+                    match parts.len() {
+                        // 2-part: InstanceTenancy.value
+                        2 => {
+                            if parts[0] != "InstanceTenancy" {
+                                return Err(format!(
+                                    "Invalid instance tenancy '{}', expected format: InstanceTenancy.default, InstanceTenancy.dedicated, or InstanceTenancy.host",
+                                    s
+                                ));
+                            }
+                        }
+                        // 4-part: awscc.vpc.InstanceTenancy.value
+                        4 => {
+                            if parts[0] != "awscc"
+                                || parts[1] != "vpc"
+                                || parts[2] != "InstanceTenancy"
+                            {
+                                return Err(format!(
+                                    "Invalid instance tenancy '{}', expected format: awscc.vpc.InstanceTenancy.default, awscc.vpc.InstanceTenancy.dedicated, or awscc.vpc.InstanceTenancy.host",
+                                    s
+                                ));
+                            }
+                        }
+                        _ => {
+                            return Err(format!(
+                                "Invalid instance tenancy '{}', expected one of: default, dedicated, host, InstanceTenancy.default, or awscc.vpc.InstanceTenancy.default",
+                                s
+                            ));
+                        }
                     }
                 }
                 let normalized = normalize_instance_tenancy(s);
@@ -97,7 +118,7 @@ pub fn instance_tenancy() -> AttributeType {
                     Ok(())
                 } else {
                     Err(format!(
-                        "Invalid instance tenancy '{}', expected one of: awscc.vpc.InstanceTenancy.default, awscc.vpc.InstanceTenancy.dedicated, awscc.vpc.InstanceTenancy.host",
+                        "Invalid instance tenancy '{}', expected one of: default, dedicated, host",
                         s
                     ))
                 }
@@ -105,6 +126,7 @@ pub fn instance_tenancy() -> AttributeType {
                 Err("Expected string".to_string())
             }
         },
+        namespace: Some("awscc.vpc".to_string()),
     }
 }
 
@@ -160,9 +182,9 @@ pub fn vpc_schema() -> ResourceSchema {
             AttributeSchema::new("instance_tenancy", instance_tenancy())
                 .with_description("The allowed tenancy of instances launched into the VPC. Values: default, dedicated, host")
                 .with_completions(vec![
-                    CompletionValue::new("awscc.vpc.InstanceTenancy.default", "Instances can have any tenancy"),
-                    CompletionValue::new("awscc.vpc.InstanceTenancy.dedicated", "Instances run on single-tenant hardware"),
-                    CompletionValue::new("awscc.vpc.InstanceTenancy.host", "Instances run on dedicated host"),
+                    CompletionValue::new("default", "Instances can have any tenancy"),
+                    CompletionValue::new("dedicated", "Instances run on single-tenant hardware"),
+                    CompletionValue::new("host", "Instances run on dedicated host"),
                 ]),
         )
         .attribute(
@@ -319,6 +341,27 @@ mod tests {
     }
 
     #[test]
+    fn valid_instance_tenancy_short_format() {
+        let tenancy = instance_tenancy();
+        // 2-part format: InstanceTenancy.value
+        assert!(
+            tenancy
+                .validate(&Value::String("InstanceTenancy.default".to_string()))
+                .is_ok()
+        );
+        assert!(
+            tenancy
+                .validate(&Value::String("InstanceTenancy.dedicated".to_string()))
+                .is_ok()
+        );
+        assert!(
+            tenancy
+                .validate(&Value::String("InstanceTenancy.host".to_string()))
+                .is_ok()
+        );
+    }
+
+    #[test]
     fn invalid_instance_tenancy_wrong_namespace() {
         let tenancy = instance_tenancy();
         // Typo: awscc.vp instead of awscc.vpc
@@ -341,6 +384,18 @@ mod tests {
         assert!(
             tenancy
                 .validate(&Value::String("awscc.vpc.Tenancy.default".to_string()))
+                .is_err()
+        );
+        // Wrong short type name
+        assert!(
+            tenancy
+                .validate(&Value::String("Tenancy.default".to_string()))
+                .is_err()
+        );
+        // 3-part format is not valid
+        assert!(
+            tenancy
+                .validate(&Value::String("vpc.InstanceTenancy.default".to_string()))
                 .is_err()
         );
     }

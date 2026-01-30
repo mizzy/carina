@@ -173,19 +173,45 @@ impl DiagnosticEngine {
                                     carina_core::schema::AttributeType::Custom {
                                         name,
                                         validate,
+                                        namespace,
                                         ..
                                     },
                                     value,
                                 ) => {
+                                    // Handle UnresolvedIdent by expanding to full namespace format
+                                    let resolved_value = match value {
+                                        Value::UnresolvedIdent(ident, member) => {
+                                            let expanded = match (namespace, member) {
+                                                // TypeName.value -> namespace.TypeName.value
+                                                (Some(ns), Some(m)) if ident == name => {
+                                                    format!("{}.{}.{}", ns, ident, m)
+                                                }
+                                                // SomeOther.value with namespace
+                                                (Some(_ns), Some(m)) => {
+                                                    format!("{}.{}", ident, m)
+                                                }
+                                                // value -> namespace.TypeName.value
+                                                (Some(ns), None) => {
+                                                    format!("{}.{}.{}", ns, name, ident)
+                                                }
+                                                // No namespace, keep as-is
+                                                (None, Some(m)) => format!("{}.{}", ident, m),
+                                                (None, None) => ident.clone(),
+                                            };
+                                            Value::String(expanded)
+                                        }
+                                        _ => value.clone(),
+                                    };
+
                                     if name == "Cidr" {
-                                        if let Value::String(s) = value {
+                                        if let Value::String(s) = &resolved_value {
                                             validate_cidr(s).err()
                                         } else {
                                             None
                                         }
                                     } else {
                                         // Use schema's validate function for other Custom types
-                                        validate(value).err().map(|e| e.to_string())
+                                        validate(&resolved_value).err().map(|e| e.to_string())
                                     }
                                 }
                                 // String type - check for bare resource binding

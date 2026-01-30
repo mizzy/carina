@@ -41,6 +41,13 @@ pub enum Value {
         /// Optional resource type for type checking (e.g., aws.vpc)
         resource_type: Option<ResourceTypePath>,
     },
+    /// Unresolved identifier that will be resolved during schema validation
+    /// This allows shorthand enum values like `dedicated` to be resolved to
+    /// `aws.vpc.InstanceTenancy.dedicated` based on schema context.
+    /// The tuple contains (identifier, optional_member) for forms like:
+    /// - `dedicated` -> ("dedicated", None)
+    /// - `InstanceTenancy.dedicated` -> ("InstanceTenancy", Some("dedicated"))
+    UnresolvedIdent(String, Option<String>),
 }
 
 /// Desired state declared in DSL
