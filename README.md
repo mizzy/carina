@@ -3,7 +3,7 @@
 > [!CAUTION]
 > This is an experimental project. The DSL syntax, APIs, and features are subject to change without notice.
 
-A functional infrastructure management tool written in Rust. Carina treats infrastructure changes as values (Effects) rather than immediately executing side effects, enabling safer and more predictable infrastructure management.
+A strongly typed infrastructure management tool written in Rust.
 
 ## Features
 
