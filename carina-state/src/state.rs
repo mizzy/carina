@@ -20,7 +20,8 @@ pub struct StateFile {
 
 impl StateFile {
     /// Current state file format version
-    pub const CURRENT_VERSION: u32 = 1;
+    /// v2: Added identifier field to ResourceState
+    pub const CURRENT_VERSION: u32 = 2;
 
     /// Create a new empty state file
     pub fn new() -> Self {
@@ -106,6 +107,10 @@ pub struct ResourceState {
     pub name: String,
     /// Provider name (e.g., "aws")
     pub provider: String,
+    /// AWS internal identifier (e.g., vpc-xxx, subnet-xxx)
+    /// If None, the resource is considered not to exist
+    #[serde(default)]
+    pub identifier: Option<String>,
     /// All attributes of the resource as JSON values
     pub attributes: HashMap<String, serde_json::Value>,
     /// Whether this resource is protected from deletion (e.g., state bucket)
@@ -124,9 +129,16 @@ impl ResourceState {
             resource_type: resource_type.into(),
             name: name.into(),
             provider: provider.into(),
+            identifier: None,
             attributes: HashMap::new(),
             protected: false,
         }
+    }
+
+    /// Set the identifier (AWS internal ID like vpc-xxx)
+    pub fn with_identifier(mut self, identifier: impl Into<String>) -> Self {
+        self.identifier = Some(identifier.into());
+        self
     }
 
     /// Set an attribute value

@@ -1,7 +1,9 @@
 //! Backend implementations for state storage
 
+mod local;
 mod s3;
 
+pub use local::LocalBackend;
 pub use s3::S3Backend;
 
 use crate::backend::{BackendConfig, BackendError, BackendResult, StateBackend};
@@ -16,12 +18,22 @@ pub async fn create_backend(config: &BackendConfig) -> BackendResult<Box<dyn Sta
             let backend = S3Backend::from_config(config).await?;
             Ok(Box::new(backend))
         }
+        "local" => {
+            let backend = LocalBackend::from_config(config)?;
+            Ok(Box::new(backend))
+        }
         // Future backends:
         // "gcs" => Ok(Box::new(GcsBackend::from_config(config)?)),
         // "azure" => Ok(Box::new(AzureBackend::from_config(config)?)),
-        // "local" => Ok(Box::new(LocalBackend::from_config(config)?)),
         other => Err(BackendError::unsupported_backend(other)),
     }
+}
+
+/// Create a default local backend
+///
+/// This is used when no backend is configured in the .crn file.
+pub fn create_local_backend() -> Box<dyn StateBackend> {
+    Box::new(LocalBackend::new())
 }
 
 #[cfg(test)]

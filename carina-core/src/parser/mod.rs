@@ -556,8 +556,13 @@ fn parse_anonymous_resource(
     let attributes = parse_block_contents(inner, ctx)?;
 
     // Get resource name from name attribute
+    // In module context, name can be input.param which is a ResourceRef
     let resource_name = match attributes.get("name") {
         Some(Value::String(s)) => s.clone(),
+        Some(Value::ResourceRef(ref_name, ref_attr)) if ctx.in_module && ref_name == "input" => {
+            // In module context, use a placeholder that will be resolved at instantiation
+            format!("__input_ref__:{}", ref_attr)
+        }
         _ => {
             return Err(ParseError::InvalidExpression {
                 line: 0,
@@ -662,8 +667,14 @@ fn parse_resource_expr(
     let mut attributes = parse_block_contents(inner, ctx)?;
 
     // Get resource name from name attribute (same as anonymous resources)
+    // In module context, name can be input.param which is a ResourceRef
     let resource_name = match attributes.get("name") {
         Some(Value::String(s)) => s.clone(),
+        Some(Value::ResourceRef(ref_name, ref_attr)) if ctx.in_module && ref_name == "input" => {
+            // In module context, use a placeholder that will be resolved at instantiation
+            // The actual name will be substituted when the module is used
+            format!("__input_ref__:{}", ref_attr)
+        }
         _ => {
             return Err(ParseError::InvalidExpression {
                 line: 0,
@@ -714,8 +725,13 @@ fn parse_read_resource_expr(
     let mut attributes = parse_block_contents(inner, ctx)?;
 
     // Get resource name from name attribute (required for data sources)
+    // In module context, name can be input.param which is a ResourceRef
     let resource_name = match attributes.get("name") {
         Some(Value::String(s)) => s.clone(),
+        Some(Value::ResourceRef(ref_name, ref_attr)) if ctx.in_module && ref_name == "input" => {
+            // In module context, use a placeholder that will be resolved at instantiation
+            format!("__input_ref__:{}", ref_attr)
+        }
         _ => {
             return Err(ParseError::InvalidExpression {
                 line: 0,

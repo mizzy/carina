@@ -105,7 +105,8 @@ impl<P: Provider> Interpreter<P> {
 
         match effect {
             Effect::Read { resource } => {
-                let state = self.provider.read(&resource.id).await?;
+                // Read without identifier (fall back to name-based lookup)
+                let state = self.provider.read(&resource.id, None).await?;
                 Ok(EffectOutcome::Read { state })
             }
             Effect::Create(resource) => {
@@ -113,11 +114,15 @@ impl<P: Provider> Interpreter<P> {
                 Ok(EffectOutcome::Created { state })
             }
             Effect::Update { id, from, to } => {
-                let state = self.provider.update(id, from, to).await?;
+                // Use identifier from current state if available
+                let identifier = from.identifier.as_deref().unwrap_or("");
+                let state = self.provider.update(id, identifier, from, to).await?;
                 Ok(EffectOutcome::Updated { state })
             }
             Effect::Delete(id) => {
-                self.provider.delete(id).await?;
+                // Delete without identifier - this won't work for identifier-based providers
+                // CLI handles identifier extraction from state directly
+                self.provider.delete(id, "").await?;
                 Ok(EffectOutcome::Deleted)
             }
         }
@@ -141,19 +146,25 @@ mod tests {
             vec![]
         }
 
-        fn read(&self, id: &ResourceId) -> BoxFuture<'_, ProviderResult<State>> {
+        fn read(
+            &self,
+            id: &ResourceId,
+            _identifier: Option<&str>,
+        ) -> BoxFuture<'_, ProviderResult<State>> {
             let id = id.clone();
             Box::pin(async move { Ok(State::not_found(id)) })
         }
 
         fn create(&self, resource: &Resource) -> BoxFuture<'_, ProviderResult<State>> {
-            let state = State::existing(resource.id.clone(), resource.attributes.clone());
+            let state = State::existing(resource.id.clone(), resource.attributes.clone())
+                .with_identifier("test-id");
             Box::pin(async move { Ok(state) })
         }
 
         fn update(
             &self,
             id: &ResourceId,
+            _identifier: &str,
             _from: &State,
             to: &Resource,
         ) -> BoxFuture<'_, ProviderResult<State>> {
@@ -161,7 +172,7 @@ mod tests {
             Box::pin(async move { Ok(state) })
         }
 
-        fn delete(&self, _id: &ResourceId) -> BoxFuture<'_, ProviderResult<()>> {
+        fn delete(&self, _id: &ResourceId, _identifier: &str) -> BoxFuture<'_, ProviderResult<()>> {
             Box::pin(async { Ok(()) })
         }
     }

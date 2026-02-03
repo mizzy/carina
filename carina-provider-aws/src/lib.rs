@@ -208,7 +208,8 @@ impl AwsProvider {
                     }
                 }
 
-                Ok(State::existing(id, attributes))
+                // S3 bucket identifier is the bucket name
+                Ok(State::existing(id, attributes).with_identifier(name))
             }
             Err(err) => {
                 // Handle bucket not found
@@ -482,9 +483,10 @@ impl AwsProvider {
                 attributes.insert("cidr_block".to_string(), Value::String(cidr.to_string()));
             }
 
-            // Store VPC ID as public attribute
-            if let Some(vpc_id) = vpc.vpc_id() {
-                attributes.insert("id".to_string(), Value::String(vpc_id.to_string()));
+            // Store VPC ID as public attribute and as identifier
+            let vpc_id_str = vpc.vpc_id().map(String::from);
+            if let Some(ref vpc_id) = vpc_id_str {
+                attributes.insert("id".to_string(), Value::String(vpc_id.clone()));
             }
 
             // Instance tenancy - convert to DSL format
@@ -534,7 +536,12 @@ impl AwsProvider {
                 }
             }
 
-            Ok(State::existing(id, attributes))
+            let state = State::existing(id, attributes);
+            Ok(if let Some(vpc_id) = vpc_id_str {
+                state.with_identifier(vpc_id)
+            } else {
+                state
+            })
         } else {
             Ok(State::not_found(id))
         }
@@ -770,8 +777,9 @@ impl AwsProvider {
             }
 
             // Store subnet ID
-            if let Some(subnet_id) = subnet.subnet_id() {
-                attributes.insert("id".to_string(), Value::String(subnet_id.to_string()));
+            let subnet_id_str = subnet.subnet_id().map(String::from);
+            if let Some(ref subnet_id) = subnet_id_str {
+                attributes.insert("id".to_string(), Value::String(subnet_id.clone()));
             }
 
             // Store VPC ID
@@ -779,7 +787,12 @@ impl AwsProvider {
                 attributes.insert("vpc_id".to_string(), Value::String(vpc_id.to_string()));
             }
 
-            Ok(State::existing(id, attributes))
+            let state = State::existing(id, attributes);
+            Ok(if let Some(subnet_id) = subnet_id_str {
+                state.with_identifier(subnet_id)
+            } else {
+                state
+            })
         } else {
             Ok(State::not_found(id))
         }
@@ -910,8 +923,9 @@ impl AwsProvider {
             attributes.insert("region".to_string(), Value::String(region_dsl));
 
             // Store IGW ID
-            if let Some(igw_id) = igw.internet_gateway_id() {
-                attributes.insert("id".to_string(), Value::String(igw_id.to_string()));
+            let igw_id_str = igw.internet_gateway_id().map(String::from);
+            if let Some(ref igw_id) = igw_id_str {
+                attributes.insert("id".to_string(), Value::String(igw_id.clone()));
             }
 
             // Store attached VPC ID
@@ -921,7 +935,12 @@ impl AwsProvider {
                 attributes.insert("vpc_id".to_string(), Value::String(vpc_id.to_string()));
             }
 
-            Ok(State::existing(id, attributes))
+            let state = State::existing(id, attributes);
+            Ok(if let Some(igw_id) = igw_id_str {
+                state.with_identifier(igw_id)
+            } else {
+                state
+            })
         } else {
             Ok(State::not_found(id))
         }
@@ -1105,8 +1124,9 @@ impl AwsProvider {
             attributes.insert("region".to_string(), Value::String(region_dsl));
 
             // Store route table ID
-            if let Some(rt_id) = rt.route_table_id() {
-                attributes.insert("id".to_string(), Value::String(rt_id.to_string()));
+            let rt_id_str = rt.route_table_id().map(String::from);
+            if let Some(ref rt_id) = rt_id_str {
+                attributes.insert("id".to_string(), Value::String(rt_id.clone()));
             }
 
             // Store VPC ID
@@ -1132,7 +1152,12 @@ impl AwsProvider {
                 attributes.insert("routes".to_string(), Value::List(routes_list));
             }
 
-            Ok(State::existing(id, attributes))
+            let state = State::existing(id, attributes);
+            Ok(if let Some(rt_id) = rt_id_str {
+                state.with_identifier(rt_id)
+            } else {
+                state
+            })
         } else {
             Ok(State::not_found(id))
         }
@@ -1321,7 +1346,9 @@ impl AwsProvider {
                         );
                     }
 
-                    return Ok(State::existing(id, attributes));
+                    // Route identifier is route_table_id|destination_cidr_block
+                    let identifier = format!("{}|{}", route_table_id, destination_cidr_block);
+                    return Ok(State::existing(id, attributes).with_identifier(identifier));
                 }
             }
         }
@@ -1381,7 +1408,9 @@ impl AwsProvider {
         let mut attributes = resource.attributes.clone();
         attributes.insert("name".to_string(), Value::String(name));
 
-        Ok(State::existing(resource.id, attributes))
+        // Route identifier is route_table_id|destination_cidr_block
+        let identifier = format!("{}|{}", route_table_id, destination_cidr);
+        Ok(State::existing(resource.id, attributes).with_identifier(identifier))
     }
 
     /// Update an EC2 Route (replace the route)
@@ -1423,7 +1452,9 @@ impl AwsProvider {
             ProviderError::new(format!("Failed to update route: {:?}", e)).for_resource(id.clone())
         })?;
 
-        Ok(State::existing(id, to.attributes.clone()))
+        // Route identifier is route_table_id|destination_cidr_block
+        let identifier = format!("{}|{}", route_table_id, destination_cidr);
+        Ok(State::existing(id, to.attributes.clone()).with_identifier(identifier))
     }
 
     // ========== EC2 Security Group Operations ==========
@@ -1481,8 +1512,9 @@ impl AwsProvider {
             }
 
             // Store security group ID
-            if let Some(sg_id) = sg.group_id() {
-                attributes.insert("id".to_string(), Value::String(sg_id.to_string()));
+            let sg_id_str = sg.group_id().map(String::from);
+            if let Some(ref sg_id) = sg_id_str {
+                attributes.insert("id".to_string(), Value::String(sg_id.clone()));
             }
 
             // Store VPC ID
@@ -1490,7 +1522,12 @@ impl AwsProvider {
                 attributes.insert("vpc_id".to_string(), Value::String(vpc_id.to_string()));
             }
 
-            Ok(State::existing(id, attributes))
+            let state = State::existing(id, attributes);
+            Ok(if let Some(sg_id) = sg_id_str {
+                state.with_identifier(sg_id)
+            } else {
+                state
+            })
         } else {
             Ok(State::not_found(id))
         }
@@ -1659,9 +1696,12 @@ impl AwsProvider {
             .iter()
             .filter_map(|r| r.security_group_rule_id().map(String::from))
             .collect();
-        if !rule_ids.is_empty() {
+        let identifier = if !rule_ids.is_empty() {
             attributes.insert("id".to_string(), Value::String(rule_ids.join(",")));
-        }
+            Some(rule_ids.join(","))
+        } else {
+            None
+        };
 
         // Store security group ID
         if let Some(sg_id) = first_rule.group_id() {
@@ -1693,7 +1733,12 @@ impl AwsProvider {
             attributes.insert("cidr_blocks".to_string(), Value::List(cidr_blocks));
         }
 
-        Ok(State::existing(id, attributes))
+        let state = State::existing(id, attributes);
+        Ok(if let Some(id_str) = identifier {
+            state.with_identifier(id_str)
+        } else {
+            state
+        })
     }
 
     /// Create an EC2 Security Group Rule
@@ -1912,7 +1957,13 @@ impl Provider for AwsProvider {
         ]
     }
 
-    fn read(&self, id: &ResourceId) -> BoxFuture<'_, ProviderResult<State>> {
+    fn read(
+        &self,
+        id: &ResourceId,
+        _identifier: Option<&str>,
+    ) -> BoxFuture<'_, ProviderResult<State>> {
+        // Note: For AWS provider, we currently use name-based lookup.
+        // The identifier parameter is available for future optimization.
         let id = id.clone();
         Box::pin(async move {
             match id.resource_type.as_str() {
@@ -1967,9 +2018,12 @@ impl Provider for AwsProvider {
     fn update(
         &self,
         id: &ResourceId,
+        _identifier: &str,
         _from: &State,
         to: &Resource,
     ) -> BoxFuture<'_, ProviderResult<State>> {
+        // Note: For AWS provider, we currently use name-based lookup.
+        // The identifier parameter is available for future optimization.
         let id = id.clone();
         let to = to.clone();
         Box::pin(async move {
@@ -1996,7 +2050,9 @@ impl Provider for AwsProvider {
         })
     }
 
-    fn delete(&self, id: &ResourceId) -> BoxFuture<'_, ProviderResult<()>> {
+    fn delete(&self, id: &ResourceId, _identifier: &str) -> BoxFuture<'_, ProviderResult<()>> {
+        // Note: For AWS provider, we currently use name-based lookup.
+        // The identifier parameter is available for future optimization.
         let id = id.clone();
         Box::pin(async move {
             match id.resource_type.as_str() {

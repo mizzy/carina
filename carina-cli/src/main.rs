@@ -20,7 +20,7 @@ use carina_provider_aws::schemas;
 use carina_provider_awscc::AwsccProvider;
 use carina_state::{
     BackendConfig as StateBackendConfig, BackendError, LockInfo, ResourceState, StateBackend,
-    StateFile, create_backend,
+    StateFile, create_backend, create_local_backend,
 };
 use std::collections::HashSet;
 
@@ -310,21 +310,15 @@ fn derive_module_name(path: &Path) -> String {
 
 /// Validate provider region attribute
 fn validate_provider_region(parsed: &ParsedFile) -> Result<(), String> {
-    let aws_region_type = carina_provider_aws::schemas::types::aws_region();
-    let awscc_region_type = carina_provider_awscc::schemas::vpc::aws_region();
+    // Use the same region type for both aws and awscc providers
+    let region_type = carina_provider_aws::schemas::types::aws_region();
 
     for provider in &parsed.providers {
-        if provider.name == "aws"
+        if (provider.name == "aws" || provider.name == "awscc")
             && let Some(region_value) = provider.attributes.get("region")
-            && let Err(e) = aws_region_type.validate(region_value)
+            && let Err(e) = region_type.validate(region_value)
         {
-            return Err(format!("provider aws: {}", e));
-        }
-        if provider.name == "awscc"
-            && let Some(region_value) = provider.attributes.get("region")
-            && let Err(e) = awscc_region_type.validate(region_value)
-        {
-            return Err(format!("provider awscc: {}", e));
+            return Err(format!("provider {}: {}", provider.name, e));
         }
     }
     Ok(())
@@ -596,11 +590,13 @@ async fn run_plan(path: &PathBuf) -> Result<(), String> {
 
     validate_resources(&parsed.resources)?;
 
-    // Check for backend configuration and show bootstrap info
+    // Check for backend configuration and load state
+    // Use local backend by default if no backend is configured
     let mut will_create_state_bucket = false;
     let mut state_bucket_name = String::new();
+    let mut state_file: Option<StateFile> = None;
 
-    if let Some(config) = parsed.backend.as_ref() {
+    let _backend: Box<dyn StateBackend> = if let Some(config) = parsed.backend.as_ref() {
         let state_config = convert_backend_config(config);
         let backend = create_backend(&state_config)
             .await
@@ -611,7 +607,13 @@ async fn run_plan(path: &PathBuf) -> Result<(), String> {
             .await
             .map_err(|e| format!("Failed to check bucket: {}", e))?;
 
-        if !bucket_exists {
+        if bucket_exists {
+            // Try to load state from backend
+            state_file = backend
+                .read_state()
+                .await
+                .map_err(|e| format!("Failed to read state: {}", e))?;
+        } else {
             // Check if there's a matching s3.bucket resource defined
             let bucket_name = config
                 .attributes
@@ -650,7 +652,16 @@ async fn run_plan(path: &PathBuf) -> Result<(), String> {
                 }
             }
         }
-    }
+        backend
+    } else {
+        // Use local backend by default
+        let backend = create_local_backend();
+        state_file = backend
+            .read_state()
+            .await
+            .map_err(|e| format!("Failed to read state: {}", e))?;
+        backend
+    };
 
     // Show bootstrap plan if needed
     if will_create_state_bucket {
@@ -667,7 +678,7 @@ async fn run_plan(path: &PathBuf) -> Result<(), String> {
         println!();
     }
 
-    let plan = create_plan_from_parsed(&parsed).await?;
+    let plan = create_plan_from_parsed(&parsed, &state_file).await?;
     print_plan(&plan);
     Ok(())
 }
@@ -690,26 +701,24 @@ async fn run_apply(path: &PathBuf) -> Result<(), String> {
 
     validate_resources(&parsed.resources)?;
 
-    // Check for backend configuration
+    // Check for backend configuration - use local backend by default
     let backend_config = parsed.backend.as_ref();
-    let backend: Option<Box<dyn StateBackend>> = if let Some(config) = backend_config {
+    let backend: Box<dyn StateBackend> = if let Some(config) = backend_config {
         let state_config = convert_backend_config(config);
-        Some(
-            create_backend(&state_config)
-                .await
-                .map_err(|e| format!("Failed to create backend: {}", e))?,
-        )
+        create_backend(&state_config)
+            .await
+            .map_err(|e| format!("Failed to create backend: {}", e))?
     } else {
-        None
+        create_local_backend()
     };
 
-    // Handle bootstrap if backend is configured
+    // Handle bootstrap if S3 backend is configured
+    #[allow(unused_assignments)]
     let mut lock: Option<LockInfo> = None;
+    #[allow(unused_assignments)]
     let mut state_file: Option<StateFile> = None;
 
-    if let Some(ref backend) = backend {
-        let config = backend_config.unwrap();
-
+    if let Some(config) = backend_config {
         // Check if bucket exists (bootstrap detection)
         let bucket_exists = backend
             .bucket_exists()
@@ -880,6 +889,30 @@ async fn run_apply(path: &PathBuf) -> Result<(), String> {
             .read_state()
             .await
             .map_err(|e| format!("Failed to read state: {}", e))?;
+    } else {
+        // Local backend: acquire lock and read state
+        println!("{}", "Acquiring state lock...".cyan());
+        lock = Some(backend.acquire_lock("apply").await.map_err(|e| match e {
+            BackendError::Locked {
+                who,
+                lock_id,
+                operation,
+            } => {
+                format!(
+                    "State is locked by {} (lock ID: {}, operation: {})\n\
+                            If you believe this is stale, run: carina force-unlock {}",
+                    who, lock_id, operation, lock_id
+                )
+            }
+            _ => format!("Failed to acquire lock: {}", e),
+        })?);
+        println!("  {} Lock acquired", "✓".green());
+
+        // Read current state from local file
+        state_file = backend
+            .read_state()
+            .await
+            .map_err(|e| format!("Failed to read state: {}", e))?;
     }
 
     // Sort resources by dependencies
@@ -888,66 +921,16 @@ async fn run_apply(path: &PathBuf) -> Result<(), String> {
     // Select appropriate Provider based on configuration
     let provider: Box<dyn Provider> = get_provider(&parsed).await;
 
-    // Get AWS provider for route-specific reads
-    let region = get_aws_region(&parsed);
-    let aws_provider = AwsProvider::new(&region).await;
-
-    // First pass: read states for non-route resources
+    // Read states for all resources using identifier from state
+    // In identifier-based approach, if there's no identifier in state, the resource doesn't exist
     let mut current_states: HashMap<ResourceId, State> = HashMap::new();
     for resource in &sorted_resources {
-        if resource.id.resource_type != "route" {
-            let state = provider
-                .read(&resource.id)
-                .await
-                .map_err(|e| format!("Failed to read state: {}", e))?;
-            current_states.insert(resource.id.clone(), state);
-        }
-    }
-
-    // Build initial binding map for route reference resolution
-    let mut route_binding_map: HashMap<String, HashMap<String, Value>> = HashMap::new();
-    for resource in &sorted_resources {
-        if let Some(Value::String(binding_name)) = resource.attributes.get("_binding") {
-            let mut attrs = resource.attributes.clone();
-            if let Some(state) = current_states.get(&resource.id)
-                && state.exists
-            {
-                for (k, v) in &state.attributes {
-                    if !attrs.contains_key(k) {
-                        attrs.insert(k.clone(), v.clone());
-                    }
-                }
-            }
-            route_binding_map.insert(binding_name.clone(), attrs);
-        }
-    }
-
-    // Second pass: read states for route resources (need resolved route_table_id)
-    for resource in &sorted_resources {
-        if resource.id.resource_type == "route" {
-            // Resolve route_table_id and destination_cidr_block
-            let route_table_id = match resource.attributes.get("route_table_id") {
-                Some(value) => {
-                    let resolved = resolve_ref_value(value, &route_binding_map);
-                    match resolved {
-                        Value::String(s) => s,
-                        _ => continue,
-                    }
-                }
-                None => continue,
-            };
-
-            let destination_cidr = match resource.attributes.get("destination_cidr_block") {
-                Some(Value::String(s)) => s.clone(),
-                _ => continue,
-            };
-
-            let state = aws_provider
-                .read_ec2_route_by_key(&resource.id.name, &route_table_id, &destination_cidr)
-                .await
-                .map_err(|e| format!("Failed to read route state: {}", e))?;
-            current_states.insert(resource.id.clone(), state);
-        }
+        let identifier = get_identifier_from_state(&state_file, resource);
+        let state = provider
+            .read(&resource.id, identifier.as_deref())
+            .await
+            .map_err(|e| format!("Failed to read state: {}", e))?;
+        current_states.insert(resource.id.clone(), state);
     }
 
     // Build initial binding map for reference resolution
@@ -978,7 +961,7 @@ async fn run_apply(path: &PathBuf) -> Result<(), String> {
         println!("{}", "No changes needed.".green());
 
         // Release lock if we have one
-        if let (Some(backend), Some(lock_info)) = (&backend, &lock) {
+        if let Some(lock_info) = &lock {
             backend
                 .release_lock(lock_info)
                 .await
@@ -1044,7 +1027,9 @@ async fn run_apply(path: &PathBuf) -> Result<(), String> {
                         .insert(key.clone(), resolve_ref_value(value, &binding_map));
                 }
 
-                match provider.update(id, from, &resolved_to).await {
+                // Get identifier from current state
+                let identifier = from.identifier.as_deref().unwrap_or("");
+                match provider.update(id, identifier, from, &resolved_to).await {
                     Ok(state) => {
                         println!("  {} {}", "✓".green(), format_effect(effect));
                         success_count += 1;
@@ -1067,65 +1052,70 @@ async fn run_apply(path: &PathBuf) -> Result<(), String> {
                     }
                 }
             }
-            Effect::Delete(id) => match provider.delete(id).await {
-                Ok(()) => {
-                    println!("  {} {}", "✓".green(), format_effect(effect));
-                    success_count += 1;
+            Effect::Delete(id) => {
+                // Get identifier from current state
+                let identifier = current_states
+                    .get(id)
+                    .and_then(|s| s.identifier.as_deref())
+                    .unwrap_or("");
+                match provider.delete(id, identifier).await {
+                    Ok(()) => {
+                        println!("  {} {}", "✓".green(), format_effect(effect));
+                        success_count += 1;
+                    }
+                    Err(e) => {
+                        println!("  {} {} - {}", "✗".red(), format_effect(effect), e);
+                        failure_count += 1;
+                    }
                 }
-                Err(e) => {
-                    println!("  {} {} - {}", "✗".red(), format_effect(effect), e);
-                    failure_count += 1;
-                }
-            },
+            }
             Effect::Read { .. } => {}
         }
     }
 
-    // Save state if backend is configured
-    if let Some(ref backend) = backend {
-        println!();
-        println!("{}", "Saving state...".cyan());
+    // Save state
+    println!();
+    println!("{}", "Saving state...".cyan());
 
-        // Get or create state file
-        let mut state = state_file.unwrap_or_default();
+    // Get or create state file
+    let mut state = state_file.unwrap_or_default();
 
-        // Update state with current resources
-        for resource in &sorted_resources {
-            let existing = state.find_resource(&resource.id.resource_type, &resource.id.name);
-            if let Some(applied_state) = applied_states.get(&resource.id) {
-                let resource_state = resource_to_state(resource, applied_state, existing);
-                state.upsert_resource(resource_state);
-            } else if let Some(current_state) = current_states.get(&resource.id)
-                && current_state.exists
-            {
-                let resource_state = resource_to_state(resource, current_state, existing);
-                state.upsert_resource(resource_state);
-            }
+    // Update state with current resources
+    for resource in &sorted_resources {
+        let existing = state.find_resource(&resource.id.resource_type, &resource.id.name);
+        if let Some(applied_state) = applied_states.get(&resource.id) {
+            let resource_state = resource_to_state(resource, applied_state, existing);
+            state.upsert_resource(resource_state);
+        } else if let Some(current_state) = current_states.get(&resource.id)
+            && current_state.exists
+        {
+            let resource_state = resource_to_state(resource, current_state, existing);
+            state.upsert_resource(resource_state);
         }
+    }
 
-        // Remove deleted resources from state
-        for effect in plan.effects() {
-            if let Effect::Delete(id) = effect {
-                state.remove_resource(&id.resource_type, &id.name);
-            }
+    // Remove deleted resources from state
+    for effect in plan.effects() {
+        if let Effect::Delete(id) = effect {
+            state.remove_resource(&id.resource_type, &id.name);
         }
+    }
 
-        // Increment serial and save
-        state.increment_serial();
+    // Increment serial and save
+    state.increment_serial();
+    backend
+        .write_state(&state)
+        .await
+        .map_err(|e| format!("Failed to write state: {}", e))?;
+    println!("  {} State saved (serial: {})", "✓".green(), state.serial);
+
+    // Release lock
+    if let Some(ref lock_info) = lock {
         backend
-            .write_state(&state)
+            .release_lock(lock_info)
             .await
-            .map_err(|e| format!("Failed to write state: {}", e))?;
-        println!("  {} State saved (serial: {})", "✓".green(), state.serial);
-
-        // Release lock
-        if let Some(ref lock_info) = lock {
-            backend
-                .release_lock(lock_info)
-                .await
-                .map_err(|e| format!("Failed to release lock: {}", e))?;
-            println!("  {} Lock released", "✓".green());
-        }
+            .map_err(|e| format!("Failed to release lock: {}", e))?;
+        println!("  {} Lock released", "✓".green());
     }
 
     println!();
@@ -1170,57 +1160,55 @@ async fn run_destroy(path: &PathBuf, auto_approve: bool) -> Result<(), String> {
         return Ok(());
     }
 
-    // Check for backend configuration
+    // Check for backend configuration - use local backend by default
     let backend_config = parsed.backend.as_ref();
-    let backend: Option<Box<dyn StateBackend>> = if let Some(config) = backend_config {
+    let backend: Box<dyn StateBackend> = if let Some(config) = backend_config {
         let state_config = convert_backend_config(config);
-        Some(
-            create_backend(&state_config)
-                .await
-                .map_err(|e| format!("Failed to create backend: {}", e))?,
-        )
+        create_backend(&state_config)
+            .await
+            .map_err(|e| format!("Failed to create backend: {}", e))?
     } else {
-        None
+        create_local_backend()
     };
 
-    // Handle state locking if backend is configured
+    // Handle state locking
+    #[allow(unused_assignments)]
     let mut lock: Option<LockInfo> = None;
+    #[allow(unused_assignments)]
     let mut state_file: Option<StateFile> = None;
     let mut protected_bucket: Option<String> = None;
 
-    if let Some(ref backend) = backend {
-        let config = backend_config.unwrap();
-
-        // Get the state bucket name for protection check
+    // Get the state bucket name for protection check (S3 backend only)
+    if let Some(config) = backend_config {
         protected_bucket = config.attributes.get("bucket").and_then(|v| match v {
             Value::String(s) => Some(s.clone()),
             _ => None,
         });
-
-        // Acquire lock
-        println!("{}", "Acquiring state lock...".cyan());
-        lock = Some(backend.acquire_lock("destroy").await.map_err(|e| match e {
-            BackendError::Locked {
-                who,
-                lock_id,
-                operation,
-            } => {
-                format!(
-                    "State is locked by {} (lock ID: {}, operation: {})\n\
-                            If you believe this is stale, run: carina force-unlock {}",
-                    who, lock_id, operation, lock_id
-                )
-            }
-            _ => format!("Failed to acquire lock: {}", e),
-        })?);
-        println!("  {} Lock acquired", "✓".green());
-
-        // Read current state from backend
-        state_file = backend
-            .read_state()
-            .await
-            .map_err(|e| format!("Failed to read state: {}", e))?;
     }
+
+    // Acquire lock
+    println!("{}", "Acquiring state lock...".cyan());
+    lock = Some(backend.acquire_lock("destroy").await.map_err(|e| match e {
+        BackendError::Locked {
+            who,
+            lock_id,
+            operation,
+        } => {
+            format!(
+                "State is locked by {} (lock ID: {}, operation: {})\n\
+                        If you believe this is stale, run: carina force-unlock {}",
+                who, lock_id, operation, lock_id
+            )
+        }
+        _ => format!("Failed to acquire lock: {}", e),
+    })?);
+    println!("  {} Lock acquired", "✓".green());
+
+    // Read current state from backend
+    state_file = backend
+        .read_state()
+        .await
+        .map_err(|e| format!("Failed to read state: {}", e))?;
 
     // Sort resources by dependencies (for creation order)
     let sorted_resources = sort_resources_by_dependencies(&parsed.resources);
@@ -1231,65 +1219,15 @@ async fn run_destroy(path: &PathBuf, auto_approve: bool) -> Result<(), String> {
     // Select appropriate Provider based on configuration
     let provider: Box<dyn Provider> = get_provider(&parsed).await;
 
-    // Get AWS provider for route-specific reads
-    let region = get_aws_region(&parsed);
-    let aws_provider = AwsProvider::new(&region).await;
-
-    // Build binding map for reference resolution (needed for route reads)
-    let mut binding_map: HashMap<String, HashMap<String, Value>> = HashMap::new();
-
-    // First pass: read states for non-route resources
+    // Read states for all resources using identifier from state
     let mut current_states: HashMap<ResourceId, State> = HashMap::new();
     for resource in &destroy_order {
-        if resource.id.resource_type != "route" {
-            let state = provider
-                .read(&resource.id)
-                .await
-                .map_err(|e| format!("Failed to read state: {}", e))?;
-
-            // Update binding map with state
-            if let Some(Value::String(binding_name)) = resource.attributes.get("_binding") {
-                let mut attrs = resource.attributes.clone();
-                if state.exists {
-                    for (k, v) in &state.attributes {
-                        if !attrs.contains_key(k) {
-                            attrs.insert(k.clone(), v.clone());
-                        }
-                    }
-                }
-                binding_map.insert(binding_name.clone(), attrs);
-            }
-
-            current_states.insert(resource.id.clone(), state);
-        }
-    }
-
-    // Second pass: read states for route resources (need resolved route_table_id)
-    for resource in &destroy_order {
-        if resource.id.resource_type == "route" {
-            // Resolve route_table_id and destination_cidr_block
-            let route_table_id = match resource.attributes.get("route_table_id") {
-                Some(value) => {
-                    let resolved = resolve_ref_value(value, &binding_map);
-                    match resolved {
-                        Value::String(s) => s,
-                        _ => continue,
-                    }
-                }
-                None => continue,
-            };
-
-            let destination_cidr = match resource.attributes.get("destination_cidr_block") {
-                Some(Value::String(s)) => s.clone(),
-                _ => continue,
-            };
-
-            let state = aws_provider
-                .read_ec2_route_by_key(&resource.id.name, &route_table_id, &destination_cidr)
-                .await
-                .map_err(|e| format!("Failed to read route state: {}", e))?;
-            current_states.insert(resource.id.clone(), state);
-        }
+        let identifier = get_identifier_from_state(&state_file, resource);
+        let state = provider
+            .read(&resource.id, identifier.as_deref())
+            .await
+            .map_err(|e| format!("Failed to read state: {}", e))?;
+        current_states.insert(resource.id.clone(), state);
     }
 
     // Collect resources that exist and will be destroyed
@@ -1320,7 +1258,7 @@ async fn run_destroy(path: &PathBuf, auto_approve: bool) -> Result<(), String> {
         println!("{}", "No resources to destroy.".green());
 
         // Release lock if we have one
-        if let (Some(backend), Some(lock_info)) = (&backend, &lock) {
+        if let Some(lock_info) = &lock {
             backend
                 .release_lock(lock_info)
                 .await
@@ -1374,7 +1312,7 @@ async fn run_destroy(path: &PathBuf, auto_approve: bool) -> Result<(), String> {
         );
 
         // Release lock if we have one
-        if let (Some(backend), Some(lock_info)) = (&backend, &lock) {
+        if let Some(lock_info) = &lock {
             backend
                 .release_lock(lock_info)
                 .await
@@ -1409,7 +1347,7 @@ async fn run_destroy(path: &PathBuf, auto_approve: bool) -> Result<(), String> {
             println!("{}", "Destroy cancelled.".yellow());
 
             // Release lock if we have one
-            if let (Some(backend), Some(lock_info)) = (&backend, &lock) {
+            if let Some(lock_info) = &lock {
                 backend
                     .release_lock(lock_info)
                     .await
@@ -1430,7 +1368,16 @@ async fn run_destroy(path: &PathBuf, auto_approve: bool) -> Result<(), String> {
 
     for resource in &resources_to_destroy {
         let effect = Effect::Delete(resource.id.clone());
-        match provider.delete(&resource.id).await {
+
+        // Get identifier from current state
+        let identifier = current_states
+            .get(&resource.id)
+            .and_then(|s| s.identifier.as_deref())
+            .unwrap_or("");
+
+        let delete_result = provider.delete(&resource.id, identifier).await;
+
+        match delete_result {
             Ok(()) => {
                 println!("  {} {}", "✓".green(), format_effect(&effect));
                 success_count += 1;
@@ -1443,35 +1390,33 @@ async fn run_destroy(path: &PathBuf, auto_approve: bool) -> Result<(), String> {
         }
     }
 
-    // Save state if backend is configured
-    if let Some(ref backend) = backend {
-        println!();
-        println!("{}", "Saving state...".cyan());
+    // Save state
+    println!();
+    println!("{}", "Saving state...".cyan());
 
-        // Get or create state file
-        let mut state = state_file.unwrap_or_default();
+    // Get or create state file
+    let mut state = state_file.unwrap_or_default();
 
-        // Remove destroyed resources from state
-        for id in &destroyed_ids {
-            state.remove_resource(&id.resource_type, &id.name);
-        }
+    // Remove destroyed resources from state
+    for id in &destroyed_ids {
+        state.remove_resource(&id.resource_type, &id.name);
+    }
 
-        // Increment serial and save
-        state.increment_serial();
+    // Increment serial and save
+    state.increment_serial();
+    backend
+        .write_state(&state)
+        .await
+        .map_err(|e| format!("Failed to write state: {}", e))?;
+    println!("  {} State saved (serial: {})", "✓".green(), state.serial);
+
+    // Release lock
+    if let Some(ref lock_info) = lock {
         backend
-            .write_state(&state)
+            .release_lock(lock_info)
             .await
-            .map_err(|e| format!("Failed to write state: {}", e))?;
-        println!("  {} State saved (serial: {})", "✓".green(), state.serial);
-
-        // Release lock
-        if let Some(ref lock_info) = lock {
-            backend
-                .release_lock(lock_info)
-                .await
-                .map_err(|e| format!("Failed to release lock: {}", e))?;
-            println!("  {} Lock released", "✓".green());
-        }
+            .map_err(|e| format!("Failed to release lock: {}", e))?;
+        println!("  {} Lock released", "✓".green());
     }
 
     println!();
@@ -1497,7 +1442,20 @@ async fn run_destroy(path: &PathBuf, auto_approve: bool) -> Result<(), String> {
     Ok(())
 }
 
-/// Get region from provider configuration (DSL format: aws.Region.ap_northeast_1)
+/// Get identifier from state file for a resource
+fn get_identifier_from_state(
+    state_file: &Option<StateFile>,
+    resource: &Resource,
+) -> Option<String> {
+    if let Some(state) = state_file
+        && let Some(resource_state) =
+            state.find_resource(&resource.id.resource_type, &resource.id.name)
+    {
+        return resource_state.identifier.clone();
+    }
+    None
+}
+
 fn get_aws_region_dsl(parsed: &ParsedFile) -> Option<String> {
     for provider in &parsed.providers {
         if provider.name == "aws"
@@ -1764,79 +1722,25 @@ fn sort_resources_by_dependencies(resources: &[Resource]) -> Vec<Resource> {
     sorted
 }
 
-async fn create_plan_from_parsed(parsed: &ParsedFile) -> Result<Plan, String> {
-    // Sort resources by dependencies first
+async fn create_plan_from_parsed(
+    parsed: &ParsedFile,
+    state_file: &Option<StateFile>,
+) -> Result<Plan, String> {
     let sorted_resources = sort_resources_by_dependencies(&parsed.resources);
 
-    // Create providers based on configuration
-    let aws_region = get_aws_region(parsed);
-    let awscc_region = get_awscc_region(parsed);
-    let aws_provider = AwsProvider::new(&aws_region).await;
-    let awscc_provider = AwsccProvider::new(&awscc_region).await;
+    // Select appropriate Provider based on configuration
+    let provider: Box<dyn Provider> = get_provider(parsed).await;
 
-    // First pass: read states for non-route resources
+    // Read states for all resources using identifier from state
+    // In identifier-based approach, if there's no identifier in state, the resource doesn't exist
     let mut current_states: HashMap<ResourceId, State> = HashMap::new();
     for resource in &sorted_resources {
-        if resource.id.resource_type != "route" {
-            // Use the correct provider based on _provider attribute
-            let state = match resource.attributes.get("_provider") {
-                Some(Value::String(provider)) if provider == "awscc" => awscc_provider
-                    .read(&resource.id)
-                    .await
-                    .map_err(|e| format!("Failed to read state: {}", e))?,
-                _ => aws_provider
-                    .read(&resource.id)
-                    .await
-                    .map_err(|e| format!("Failed to read state: {}", e))?,
-            };
-            current_states.insert(resource.id.clone(), state);
-        }
-    }
-
-    // Build binding map for reference resolution
-    let mut binding_map: HashMap<String, HashMap<String, Value>> = HashMap::new();
-    for resource in &sorted_resources {
-        if let Some(Value::String(binding_name)) = resource.attributes.get("_binding") {
-            let mut attrs = resource.attributes.clone();
-            if let Some(state) = current_states.get(&resource.id)
-                && state.exists
-            {
-                for (k, v) in &state.attributes {
-                    if !attrs.contains_key(k) {
-                        attrs.insert(k.clone(), v.clone());
-                    }
-                }
-            }
-            binding_map.insert(binding_name.clone(), attrs);
-        }
-    }
-
-    // Second pass: read states for route resources (need resolved route_table_id)
-    for resource in &sorted_resources {
-        if resource.id.resource_type == "route" {
-            // Resolve route_table_id and destination_cidr_block
-            let route_table_id = match resource.attributes.get("route_table_id") {
-                Some(value) => {
-                    let resolved = resolve_ref_value(value, &binding_map);
-                    match resolved {
-                        Value::String(s) => s,
-                        _ => continue,
-                    }
-                }
-                None => continue,
-            };
-
-            let destination_cidr = match resource.attributes.get("destination_cidr_block") {
-                Some(Value::String(s)) => s.clone(),
-                _ => continue,
-            };
-
-            let state = aws_provider
-                .read_ec2_route_by_key(&resource.id.name, &route_table_id, &destination_cidr)
-                .await
-                .map_err(|e| format!("Failed to read route state: {}", e))?;
-            current_states.insert(resource.id.clone(), state);
-        }
+        let identifier = get_identifier_from_state(state_file, resource);
+        let state = provider
+            .read(&resource.id, identifier.as_deref())
+            .await
+            .map_err(|e| format!("Failed to read state: {}", e))?;
+        current_states.insert(resource.id.clone(), state);
     }
 
     // Resolve ResourceRef values using AWS state
@@ -2459,9 +2363,9 @@ async fn run_state_bucket_delete(
     println!();
     println!("{}", "Emptying bucket...".cyan());
 
-    // Delete the bucket resource
+    // Delete the bucket resource (for S3, identifier is the bucket name)
     let bucket_id = ResourceId::new("s3.bucket", bucket_name);
-    match aws_provider.delete(&bucket_id).await {
+    match aws_provider.delete(&bucket_id, bucket_name).await {
         Ok(()) => {
             println!(
                 "{}",
@@ -2584,7 +2488,11 @@ impl Provider for FileProvider {
         vec![]
     }
 
-    fn read(&self, id: &ResourceId) -> BoxFuture<'_, ProviderResult<State>> {
+    fn read(
+        &self,
+        id: &ResourceId,
+        _identifier: Option<&str>,
+    ) -> BoxFuture<'_, ProviderResult<State>> {
         let id = id.clone();
         Box::pin(async move {
             let states = self.load_states();
@@ -2595,7 +2503,7 @@ impl Provider for FileProvider {
                     .iter()
                     .map(|(k, v)| (k.clone(), Self::json_to_value(v)))
                     .collect();
-                Ok(State::existing(id, attributes))
+                Ok(State::existing(id, attributes).with_identifier("file-id"))
             } else {
                 Ok(State::not_found(id))
             }
@@ -2618,16 +2526,17 @@ impl Provider for FileProvider {
             self.save_states(&states)
                 .map_err(|e| ProviderError::new(format!("Failed to save state: {}", e)))?;
 
-            Ok(State::existing(
-                resource.id.clone(),
-                resource.attributes.clone(),
-            ))
+            Ok(
+                State::existing(resource.id.clone(), resource.attributes.clone())
+                    .with_identifier("file-id"),
+            )
         })
     }
 
     fn update(
         &self,
         id: &ResourceId,
+        _identifier: &str,
         _from: &State,
         to: &Resource,
     ) -> BoxFuture<'_, ProviderResult<State>> {
@@ -2651,7 +2560,7 @@ impl Provider for FileProvider {
         })
     }
 
-    fn delete(&self, id: &ResourceId) -> BoxFuture<'_, ProviderResult<()>> {
+    fn delete(&self, id: &ResourceId, _identifier: &str) -> BoxFuture<'_, ProviderResult<()>> {
         let id = id.clone();
         Box::pin(async move {
             let mut states = self.load_states();

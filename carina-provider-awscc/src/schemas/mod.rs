@@ -1,10 +1,11 @@
 //! AWS Cloud Control resource schema definitions
 
-pub mod vpc;
+pub mod generated;
 
 use carina_core::schema::ResourceSchema;
 
 /// Returns all AWS Cloud Control schemas
+/// Auto-generated from CloudFormation schemas
 pub fn all_schemas() -> Vec<ResourceSchema> {
-    vec![vpc::vpc_schema()]
+    generated::schemas()
 }

@@ -7,7 +7,7 @@ use carina_core::parser::{InputParameter, ParseError, ParsedFile, TypeExpr};
 use carina_core::resource::Value;
 use carina_core::schema::validate_cidr;
 use carina_provider_aws::schemas::{s3, types as aws_types, vpc};
-use carina_provider_awscc::schemas::vpc as awscc_vpc;
+use carina_provider_awscc::schemas::generated::vpc as awscc_vpc;
 
 pub struct DiagnosticEngine {
     valid_resource_types: HashSet<String>,
@@ -321,13 +321,13 @@ impl DiagnosticEngine {
     /// Check provider region attribute
     fn check_provider_region(&self, doc: &Document, parsed: &ParsedFile) -> Vec<Diagnostic> {
         let mut diagnostics = Vec::new();
-        let aws_region_type = aws_types::aws_region();
-        let awscc_region_type = awscc_vpc::aws_region();
+        // Use the same region type for both aws and awscc providers
+        let region_type = aws_types::aws_region();
 
         for provider in &parsed.providers {
             if provider.name == "aws"
                 && let Some(region_value) = provider.attributes.get("region")
-                && let Err(e) = aws_region_type.validate(region_value)
+                && let Err(e) = region_type.validate(region_value)
                 && let Some((line, col)) = self.find_provider_region_position(doc, "aws")
             {
                 diagnostics.push(Diagnostic {
@@ -349,7 +349,7 @@ impl DiagnosticEngine {
             }
             if provider.name == "awscc"
                 && let Some(region_value) = provider.attributes.get("region")
-                && let Err(e) = awscc_region_type.validate(region_value)
+                && let Err(e) = region_type.validate(region_value)
                 && let Some((line, col)) = self.find_provider_region_position(doc, "awscc")
             {
                 diagnostics.push(Diagnostic {
