@@ -2,7 +2,8 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
+use clap_complete::{Shell, generate};
 use colored::Colorize;
 use similar::{ChangeTag, TextDiff};
 
@@ -105,6 +106,12 @@ enum Commands {
         #[command(subcommand)]
         command: StateCommands,
     },
+    /// Generate shell completions
+    Completions {
+        /// Shell to generate completions for
+        #[arg(value_enum)]
+        shell: Shell,
+    },
 }
 
 #[derive(Subcommand)]
@@ -151,6 +158,10 @@ async fn main() {
         Commands::Module { command } => run_module_command(command),
         Commands::ForceUnlock { lock_id, path } => run_force_unlock(&lock_id, &path).await,
         Commands::State { command } => run_state_command(command).await,
+        Commands::Completions { shell } => {
+            generate(shell, &mut Cli::command(), "carina", &mut std::io::stdout());
+            Ok(())
+        }
     };
 
     if let Err(e) = result {
