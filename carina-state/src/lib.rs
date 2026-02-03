@@ -50,6 +50,6 @@ pub mod state;
 
 // Re-export main types for convenience
 pub use backend::{BackendConfig, BackendError, BackendResult, StateBackend};
-pub use backends::create_backend;
+pub use backends::{LocalBackend, create_backend, create_local_backend};
 pub use lock::LockInfo;
 pub use state::{ResourceState, StateFile};

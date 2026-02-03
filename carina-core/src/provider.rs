@@ -89,22 +89,35 @@ pub trait Provider: Send + Sync {
 
     /// Get the current state of a resource
     ///
-    /// Returns `State::not_found()` if the resource does not exist
-    fn read(&self, id: &ResourceId) -> BoxFuture<'_, ProviderResult<State>>;
+    /// If identifier is provided, use it to read the resource directly.
+    /// Otherwise, fall back to name-based lookup (for backwards compatibility).
+    /// Returns `State::not_found()` if the resource does not exist.
+    fn read(
+        &self,
+        id: &ResourceId,
+        identifier: Option<&str>,
+    ) -> BoxFuture<'_, ProviderResult<State>>;
 
     /// Create a resource
+    ///
+    /// Returns State with identifier set to the AWS internal ID (e.g., vpc-xxx)
     fn create(&self, resource: &Resource) -> BoxFuture<'_, ProviderResult<State>>;
 
     /// Update a resource
+    ///
+    /// The identifier is the AWS internal ID (e.g., vpc-xxx)
     fn update(
         &self,
         id: &ResourceId,
+        identifier: &str,
         from: &State,
         to: &Resource,
     ) -> BoxFuture<'_, ProviderResult<State>>;
 
     /// Delete a resource
-    fn delete(&self, id: &ResourceId) -> BoxFuture<'_, ProviderResult<()>>;
+    ///
+    /// The identifier is the AWS internal ID (e.g., vpc-xxx)
+    fn delete(&self, id: &ResourceId, identifier: &str) -> BoxFuture<'_, ProviderResult<()>>;
 }
 
 /// Provider implementation for Box<dyn Provider>
@@ -118,8 +131,12 @@ impl Provider for Box<dyn Provider> {
         (**self).resource_types()
     }
 
-    fn read(&self, id: &ResourceId) -> BoxFuture<'_, ProviderResult<State>> {
-        (**self).read(id)
+    fn read(
+        &self,
+        id: &ResourceId,
+        identifier: Option<&str>,
+    ) -> BoxFuture<'_, ProviderResult<State>> {
+        (**self).read(id, identifier)
     }
 
     fn create(&self, resource: &Resource) -> BoxFuture<'_, ProviderResult<State>> {
@@ -129,14 +146,15 @@ impl Provider for Box<dyn Provider> {
     fn update(
         &self,
         id: &ResourceId,
+        identifier: &str,
         from: &State,
         to: &Resource,
     ) -> BoxFuture<'_, ProviderResult<State>> {
-        (**self).update(id, from, to)
+        (**self).update(id, identifier, from, to)
     }
 
-    fn delete(&self, id: &ResourceId) -> BoxFuture<'_, ProviderResult<()>> {
-        (**self).delete(id)
+    fn delete(&self, id: &ResourceId, identifier: &str) -> BoxFuture<'_, ProviderResult<()>> {
+        (**self).delete(id, identifier)
     }
 }
 
@@ -156,7 +174,11 @@ mod tests {
             vec![]
         }
 
-        fn read(&self, id: &ResourceId) -> BoxFuture<'_, ProviderResult<State>> {
+        fn read(
+            &self,
+            id: &ResourceId,
+            _identifier: Option<&str>,
+        ) -> BoxFuture<'_, ProviderResult<State>> {
             let id = id.clone();
             Box::pin(async move { Ok(State::not_found(id)) })
         }
@@ -164,12 +186,13 @@ mod tests {
         fn create(&self, resource: &Resource) -> BoxFuture<'_, ProviderResult<State>> {
             let id = resource.id.clone();
             let attrs = resource.attributes.clone();
-            Box::pin(async move { Ok(State::existing(id, attrs)) })
+            Box::pin(async move { Ok(State::existing(id, attrs).with_identifier("mock-id-123")) })
         }
 
         fn update(
             &self,
             id: &ResourceId,
+            _identifier: &str,
             _from: &State,
             to: &Resource,
         ) -> BoxFuture<'_, ProviderResult<State>> {
@@ -178,7 +201,7 @@ mod tests {
             Box::pin(async move { Ok(State::existing(id, attrs)) })
         }
 
-        fn delete(&self, _id: &ResourceId) -> BoxFuture<'_, ProviderResult<()>> {
+        fn delete(&self, _id: &ResourceId, _identifier: &str) -> BoxFuture<'_, ProviderResult<()>> {
             Box::pin(async { Ok(()) })
         }
     }
@@ -187,7 +210,7 @@ mod tests {
     async fn mock_provider_read_returns_not_found() {
         let provider = MockProvider;
         let id = ResourceId::new("test", "example");
-        let state = provider.read(&id).await.unwrap();
+        let state = provider.read(&id, None).await.unwrap();
         assert!(!state.exists);
     }
 
@@ -197,5 +220,6 @@ mod tests {
         let resource = Resource::new("test", "example");
         let state = provider.create(&resource).await.unwrap();
         assert!(state.exists);
+        assert_eq!(state.identifier, Some("mock-id-123".to_string()));
     }
 }

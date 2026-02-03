@@ -88,6 +88,8 @@ impl Resource {
 #[derive(Debug, Clone, PartialEq)]
 pub struct State {
     pub id: ResourceId,
+    /// AWS internal identifier (e.g., vpc-xxx, subnet-xxx)
+    pub identifier: Option<String>,
     pub attributes: HashMap<String, Value>,
     /// Whether this state exists
     pub exists: bool,
@@ -97,6 +99,7 @@ impl State {
     pub fn not_found(id: ResourceId) -> Self {
         Self {
             id,
+            identifier: None,
             attributes: HashMap::new(),
             exists: false,
         }
@@ -105,8 +108,14 @@ impl State {
     pub fn existing(id: ResourceId, attributes: HashMap<String, Value>) -> Self {
         Self {
             id,
+            identifier: None,
             attributes,
             exists: true,
         }
+    }
+
+    pub fn with_identifier(mut self, identifier: impl Into<String>) -> Self {
+        self.identifier = Some(identifier.into());
+        self
     }
 }
