@@ -1,7 +1,7 @@
 //! Auto-generated AWS Cloud Control resource schemas
 //!
 //! DO NOT EDIT MANUALLY - regenerate with:
-//!   aws-vault exec <profile> -- ./scripts/generate-awscc-schemas.sh
+//!   aws-vault exec <profile> -- ./carina-provider-awscc/scripts/generate-schemas.sh
 
 use carina_core::resource::Value;
 use carina_core::schema::{AttributeType, ResourceSchema};
