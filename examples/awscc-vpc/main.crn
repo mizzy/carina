@@ -301,6 +301,14 @@ awscc.ec2_security_group_ingress {
   cidr_ip           = "10.0.0.0/16"
 }
 
+awscc.ec2_security_group_egress {
+  name        = "vpc-endpoint-all-outbound"
+  group_id    = vpc_endpoint_sg.group_id
+  description = "Allow all outbound traffic"
+  ip_protocol = "-1"
+  cidr_ip     = "0.0.0.0/0"
+}
+
 # ========================================
 # VPC Endpoints
 # ========================================

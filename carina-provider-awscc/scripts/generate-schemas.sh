@@ -23,6 +23,7 @@ RESOURCE_TYPES=(
     "AWS::EC2::NatGateway"
     "AWS::EC2::SecurityGroup"
     "AWS::EC2::SecurityGroupIngress"
+    "AWS::EC2::SecurityGroupEgress"
     "AWS::EC2::VPCEndpoint"
     "AWS::EC2::VPCGatewayAttachment"
 )
@@ -48,19 +49,9 @@ if [ ! -f "$CODEGEN_BIN" ]; then
 fi
 
 for TYPE_NAME in "${RESOURCE_TYPES[@]}"; do
-    # Convert AWS::EC2::VPC -> vpc.rs
-    FILENAME=$(echo "$TYPE_NAME" | sed 's/AWS::EC2:://' | tr '[:upper:]' '[:lower:]')
-    # Handle special cases
-    FILENAME=$(echo "$FILENAME" | sed 's/subnetroutetableassociation/route_table_association/')
-    FILENAME=$(echo "$FILENAME" | sed 's/vpcgatewayattachment/vpc_gateway_attachment/')
-    FILENAME=$(echo "$FILENAME" | sed 's/vpcendpoint/vpc_endpoint/')
-    FILENAME=$(echo "$FILENAME" | sed 's/natgateway/nat_gateway/')
-    FILENAME=$(echo "$FILENAME" | sed 's/internetgateway/internet_gateway/')
-    FILENAME=$(echo "$FILENAME" | sed 's/routetable/route_table/')
-    FILENAME=$(echo "$FILENAME" | sed 's/securitygroupingress/security_group_ingress/')
-    FILENAME=$(echo "$FILENAME" | sed 's/securitygroup/security_group/')
-
-    OUTPUT_FILE="$OUTPUT_DIR/${FILENAME}.rs"
+    # Use codegen to compute the module name (e.g., security_group_egress)
+    MODNAME=$("$CODEGEN_BIN" --type-name "$TYPE_NAME" --print-module-name)
+    OUTPUT_FILE="$OUTPUT_DIR/${MODNAME}.rs"
 
     echo "Generating $TYPE_NAME -> $OUTPUT_FILE"
 
@@ -188,16 +179,7 @@ EOF
 
 # Add module declarations
 for TYPE_NAME in "${RESOURCE_TYPES[@]}"; do
-    MODNAME=$(echo "$TYPE_NAME" | sed 's/AWS::EC2:://' | tr '[:upper:]' '[:lower:]')
-    MODNAME=$(echo "$MODNAME" | sed 's/subnetroutetableassociation/route_table_association/')
-    MODNAME=$(echo "$MODNAME" | sed 's/vpcgatewayattachment/vpc_gateway_attachment/')
-    MODNAME=$(echo "$MODNAME" | sed 's/vpcendpoint/vpc_endpoint/')
-    MODNAME=$(echo "$MODNAME" | sed 's/natgateway/nat_gateway/')
-    MODNAME=$(echo "$MODNAME" | sed 's/internetgateway/internet_gateway/')
-    MODNAME=$(echo "$MODNAME" | sed 's/routetable/route_table/')
-    MODNAME=$(echo "$MODNAME" | sed 's/securitygroupingress/security_group_ingress/')
-    MODNAME=$(echo "$MODNAME" | sed 's/securitygroup/security_group/')
-
+    MODNAME=$("$CODEGEN_BIN" --type-name "$TYPE_NAME" --print-module-name)
     echo "pub mod ${MODNAME};" >> "$OUTPUT_DIR/mod.rs"
 done
 
@@ -211,35 +193,9 @@ EOF
 
 # Add config function calls dynamically
 for TYPE_NAME in "${RESOURCE_TYPES[@]}"; do
-    # AWS::EC2::VPC -> ec2, vpc
-    SERVICE=$(echo "$TYPE_NAME" | sed 's/AWS::\([^:]*\)::.*/\1/' | tr '[:upper:]' '[:lower:]')
-    RESOURCE=$(echo "$TYPE_NAME" | sed 's/AWS::[^:]*:://' | tr '[:upper:]' '[:lower:]')
-
-    # Convert to snake_case
-    RESOURCE=$(echo "$RESOURCE" | sed 's/\([A-Z]\)/_\L\1/g' | sed 's/^_//')
-    # Handle special naming
-    RESOURCE=$(echo "$RESOURCE" | sed 's/subnetroutetableassociation/subnet_route_table_association/')
-    RESOURCE=$(echo "$RESOURCE" | sed 's/vpcgatewayattachment/vpc_gateway_attachment/')
-    RESOURCE=$(echo "$RESOURCE" | sed 's/vpcendpoint/vpc_endpoint/')
-    RESOURCE=$(echo "$RESOURCE" | sed 's/natgateway/nat_gateway/')
-    RESOURCE=$(echo "$RESOURCE" | sed 's/internetgateway/internet_gateway/')
-    RESOURCE=$(echo "$RESOURCE" | sed 's/routetable/route_table/')
-    RESOURCE=$(echo "$RESOURCE" | sed 's/securitygroupingress/security_group_ingress/')
-    RESOURCE=$(echo "$RESOURCE" | sed 's/securitygroup/security_group/')
-
-    # Module name (same as MODNAME above)
-    MODNAME=$(echo "$TYPE_NAME" | sed 's/AWS::EC2:://' | tr '[:upper:]' '[:lower:]')
-    MODNAME=$(echo "$MODNAME" | sed 's/subnetroutetableassociation/route_table_association/')
-    MODNAME=$(echo "$MODNAME" | sed 's/vpcgatewayattachment/vpc_gateway_attachment/')
-    MODNAME=$(echo "$MODNAME" | sed 's/vpcendpoint/vpc_endpoint/')
-    MODNAME=$(echo "$MODNAME" | sed 's/natgateway/nat_gateway/')
-    MODNAME=$(echo "$MODNAME" | sed 's/internetgateway/internet_gateway/')
-    MODNAME=$(echo "$MODNAME" | sed 's/routetable/route_table/')
-    MODNAME=$(echo "$MODNAME" | sed 's/securitygroupingress/security_group_ingress/')
-    MODNAME=$(echo "$MODNAME" | sed 's/securitygroup/security_group/')
-
-    # Function name: service_resource_config (e.g., ec2_vpc_config)
-    FUNC_NAME="${SERVICE}_${RESOURCE}_config"
+    MODNAME=$("$CODEGEN_BIN" --type-name "$TYPE_NAME" --print-module-name)
+    FULL_RESOURCE=$("$CODEGEN_BIN" --type-name "$TYPE_NAME" --print-full-resource-name)
+    FUNC_NAME="${FULL_RESOURCE}_config"
 
     echo "        ${MODNAME}::${FUNC_NAME}()," >> "$OUTPUT_DIR/mod.rs"
 done
@@ -255,6 +211,8 @@ pub fn schemas() -> Vec<ResourceSchema> {
 EOF
 
 echo ""
-echo "Done! Generated schemas in $OUTPUT_DIR"
+echo "Running cargo fmt..."
+cargo fmt -p carina-provider-awscc
+
 echo ""
-echo "To use the generated schemas, update carina-provider-awscc/src/schemas/mod.rs"
+echo "Done! Generated schemas in $OUTPUT_DIR"

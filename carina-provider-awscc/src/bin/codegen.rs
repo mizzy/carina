@@ -44,6 +44,16 @@ struct Args {
     /// Output file (writes to stdout if not specified)
     #[arg(long, short)]
     output: Option<String>,
+
+    /// Print module name for the given type and exit
+    /// e.g., AWS::EC2::SecurityGroupEgress -> security_group_egress
+    #[arg(long)]
+    print_module_name: bool,
+
+    /// Print full resource name (service_resource) for the given type and exit
+    /// e.g., AWS::EC2::SecurityGroupEgress -> ec2_security_group_egress
+    #[arg(long)]
+    print_full_resource_name: bool,
 }
 
 /// CloudFormation Resource Schema
@@ -120,8 +130,40 @@ struct CfnDefinition {
     required: Vec<String>,
 }
 
+/// Compute module name from CloudFormation type name
+/// e.g., "AWS::EC2::SecurityGroupEgress" -> "security_group_egress"
+fn module_name_from_type(type_name: &str) -> Result<String> {
+    let parts: Vec<&str> = type_name.split("::").collect();
+    if parts.len() != 3 {
+        anyhow::bail!("Invalid type name format: {}", type_name);
+    }
+    Ok(parts[2].to_snake_case())
+}
+
+/// Compute full resource name (service_resource) from CloudFormation type name
+/// e.g., "AWS::EC2::SecurityGroupEgress" -> "ec2_security_group_egress"
+fn full_resource_name_from_type(type_name: &str) -> Result<String> {
+    let parts: Vec<&str> = type_name.split("::").collect();
+    if parts.len() != 3 {
+        anyhow::bail!("Invalid type name format: {}", type_name);
+    }
+    let service = parts[1].to_lowercase();
+    let resource = parts[2].to_snake_case();
+    Ok(format!("{}_{}", service, resource))
+}
+
 fn main() -> Result<()> {
     let args = Args::parse();
+
+    if args.print_module_name {
+        println!("{}", module_name_from_type(&args.type_name)?);
+        return Ok(());
+    }
+
+    if args.print_full_resource_name {
+        println!("{}", full_resource_name_from_type(&args.type_name)?);
+        return Ok(());
+    }
 
     // Read schema JSON
     let schema_json = if let Some(file_path) = &args.file {
@@ -162,10 +204,8 @@ fn generate_schema_code(schema: &CfnSchema, type_name: &str) -> Result<String> {
     if parts.len() != 3 {
         anyhow::bail!("Invalid type name format: {}", type_name);
     }
-    let service = parts[1].to_lowercase();
     let resource = parts[2].to_snake_case();
-    // Combined format: ec2_vpc (service + underscore + resource)
-    let full_resource = format!("{}_{}", service, resource);
+    let full_resource = full_resource_name_from_type(type_name)?;
     // Namespace for enums: awscc.ec2_vpc
     let namespace = format!("awscc.{}", full_resource);
 
