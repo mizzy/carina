@@ -105,10 +105,11 @@ pub mod internet_gateway;
 pub mod nat_gateway;
 pub mod route;
 pub mod route_table;
-pub mod route_table_association;
 pub mod security_group;
+pub mod security_group_egress;
 pub mod security_group_ingress;
 pub mod subnet;
+pub mod subnet_route_table_association;
 pub mod vpc;
 pub mod vpc_endpoint;
 pub mod vpc_gateway_attachment;
@@ -121,11 +122,12 @@ pub fn configs() -> Vec<AwsccSchemaConfig> {
         internet_gateway::ec2_internet_gateway_config(),
         route_table::ec2_route_table_config(),
         route::ec2_route_config(),
-        route_table_association::ec2_subnet_route_table_association_config(),
+        subnet_route_table_association::ec2_subnet_route_table_association_config(),
         eip::ec2_eip_config(),
         nat_gateway::ec2_nat_gateway_config(),
         security_group::ec2_security_group_config(),
         security_group_ingress::ec2_security_group_ingress_config(),
+        security_group_egress::ec2_security_group_egress_config(),
         vpc_endpoint::ec2_vpc_endpoint_config(),
         vpc_gateway_attachment::ec2_vpc_gateway_attachment_config(),
     ]
