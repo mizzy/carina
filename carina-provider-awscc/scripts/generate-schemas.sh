@@ -1,8 +1,8 @@
 #!/bin/bash
 # Generate awscc provider schemas from CloudFormation
 #
-# Usage:
-#   aws-vault exec <profile> -- ./scripts/generate-awscc-schemas.sh
+# Usage (from project root):
+#   aws-vault exec <profile> -- ./carina-provider-awscc/scripts/generate-schemas.sh
 #
 # This script generates Rust schema code from CloudFormation resource type schemas.
 
@@ -85,7 +85,7 @@ cat > "$OUTPUT_DIR/mod.rs" << 'EOF'
 //! Auto-generated AWS Cloud Control resource schemas
 //!
 //! DO NOT EDIT MANUALLY - regenerate with:
-//!   aws-vault exec <profile> -- ./scripts/generate-awscc-schemas.sh
+//!   aws-vault exec <profile> -- ./carina-provider-awscc/scripts/generate-schemas.sh
 
 use carina_core::resource::Value;
 use carina_core::schema::{AttributeType, ResourceSchema};
